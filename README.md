@@ -59,6 +59,18 @@ omarchy plugin validate ~/path/to/omarchy-server-status
 omarchy plugin add file://$HOME/path/to/omarchy-server-status --enable --yes
 ```
 
+## Remove
+
+```bash
+omarchy plugin remove ryuhzk.server-status
+```
+
+This unregisters the plugin and deletes its installed files. Your per-widget
+settings (the `sshHosts` list and thresholds) live in
+`~/.config/omarchy/shell.json`; remove the widget's entry there if you want a
+fully clean slate. Nothing was ever installed on the monitored servers, so
+there is nothing to clean up remotely.
+
 ## Adding servers
 
 1. Give each server an alias in `~/.ssh/config` with key authentication:
