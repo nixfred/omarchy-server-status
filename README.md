@@ -94,6 +94,7 @@ constant SSH traffic.
 | `R`   | Refresh every host              |
 | `T`   | Open an SSH terminal            |
 | `B`   | Open btop/htop/top over SSH     |
+| `E`   | Edit settings (shell.json) in your editor |
 | `1–9` | Switch host                     |
 | `Esc` | Close the panel                 |
 

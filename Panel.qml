@@ -334,6 +334,10 @@ Panel {
     Quickshell.execDetached(["uwsm-app", "--", "xdg-terminal-exec", "--", "ssh", "-t", activeHost, "btop || htop || top"])
   }
 
+  function openSettings() {
+    Quickshell.execDetached(["omarchy-launch-editor", Quickshell.env("HOME") + "/.config/omarchy/shell.json"])
+  }
+
   onOpenedChanged: if (opened) refresh()
   // Settings can land after component creation; whenever the derived host
   // list changes, repair the active selection and refetch.
@@ -393,6 +397,7 @@ Panel {
         else if (text === "R") root.refreshAll()
         else if (text === "t" || text === "T") root.openTerminal()
         else if (text === "b" || text === "B") root.openBtop()
+        else if (text === "e" || text === "E") root.openSettings()
         else if (text >= "1" && text <= "9") {
           var index = parseInt(text, 10) - 1
           if (index < root.hostList.length) root.selectHost(root.hostList[index])
@@ -522,6 +527,13 @@ Panel {
               tooltipText: "btop over SSH (B)"
               foreground: root.foreground
               onClicked: root.openBtop()
+            }
+
+            PanelActionButton {
+              iconText: "󰒓"
+              tooltipText: "Edit settings in shell.json (E)"
+              foreground: root.foreground
+              onClicked: root.openSettings()
             }
           }
 
