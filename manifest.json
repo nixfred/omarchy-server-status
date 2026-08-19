@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "id": "ryuhzk.server-status",
+  "name": "Server Status",
+  "version": "0.1.0",
+  "author": "ryuhzk",
+  "license": "MIT",
+  "description": "Agentless server and Docker monitoring over read-only SSH. Nothing is installed on the servers.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Server Status",
+    "description": "Host load, memory, disk, network, and per-container Docker metrics collected over SSH.",
+    "category": "Development",
+    "allowMultiple": false,
+    "defaultSection": "center",
+    "defaults": {
+      "sshHosts": "",
+      "refreshIntervalSec": 30,
+      "panelWidth": 1000
+    },
+    "schema": [
+      {
+        "key": "sshHosts",
+        "type": "string",
+        "label": "SSH hosts",
+        "defaultValue": "",
+        "description": "Colon-separated ssh host aliases from ~/.ssh/config to monitor, e.g. web-1:db-1:home-nas."
+      },
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval while open (seconds)",
+        "min": 10,
+        "max": 3600,
+        "step": 5,
+        "defaultValue": 30
+      },
+      {
+        "key": "panelWidth",
+        "type": "integer",
+        "label": "Panel width",
+        "min": 320,
+        "max": 1200,
+        "step": 10,
+        "defaultValue": 1000,
+        "description": "Width of the popup panel in layout units."
+      }
+    ]
+  }
+}

@@ -1,0 +1,99 @@
+import { describe, expect, test } from "bun:test";
+import { parseContainers, parseHost, parseSize, splitSections } from "../backend/collect";
+
+const SAMPLE = `@@HOST@@
+demo-app-01
+4
+0.35 0.20 0.19 1/523 12345
+563122.33 2100000.00
+@@MEM@@
+Mem:      7789748224  2670592000   245760000    41943040  4873356224  5119148032
+Swap:     2147479552   536870912  1610608640
+@@DISK@@
+/               126692061184  21474836480 100086840320
+/lhcos-data  281474976710656            0 281474976710656
+@@NET@@
+    lo: 8000000    100    0    0    0     0          0         0  8000000    100    0    0    0     0       0          0
+  eth0: 18579456000 200000    0    0    0     0          0         0 1073741824 150000    0    0    0     0       0          0
+tailscale0: 52428800   9000    0    0    0     0          0         0 31457280   8000    0    0    0     0       0          0
+docker0: 999999999   500    0    0    0     0          0         0 999999999   500    0    0    0     0       0          0
+@@DOCKER_PS@@
+{"Names":"web-1","Image":"example/web:sha-abc","Status":"Up 6 days (healthy)","State":"running"}
+{"Names":"redis-1","Image":"redis:8.10-alpine","Status":"Up 6 days (healthy)","State":"running"}
+@@DOCKER_STATS@@
+{"Name":"web-1","CPUPerc":"9.39%","MemUsage":"1.254GiB / 4GiB","MemPerc":"31.34%","NetIO":"1.2GB / 300MB","BlockIO":"10MB / 5MB","PIDs":"58"}
+{"Name":"redis-1","CPUPerc":"0.20%","MemUsage":"4.2MiB / 512MiB","MemPerc":"0.82%","NetIO":"100MB / 90MB","BlockIO":"1MB / 0B","PIDs":"6"}
+@@DOCKER_INSPECT@@
+{"Name":"/web-1","Restarts":0,"StartedAt":"2026-08-13T02:00:00Z","Status":"running","OOM":false,"Health":"healthy"}
+{"Name":"/redis-1","Restarts":2,"StartedAt":"2026-08-13T02:00:00Z","Status":"running","OOM":false,"Health":"healthy"}
+@@END@@
+`;
+
+describe("splitSections", () => {
+  test("splits marker-delimited sections", () => {
+    const sections = splitSections(SAMPLE);
+    expect([...sections.keys()]).toEqual([
+      "HOST",
+      "MEM",
+      "DISK",
+      "NET",
+      "DOCKER_PS",
+      "DOCKER_STATS",
+      "DOCKER_INSPECT",
+    ]);
+    expect(sections.get("DOCKER_PS")?.length).toBe(2);
+  });
+});
+
+describe("parseHost", () => {
+  const host = parseHost(splitSections(SAMPLE));
+
+  test("reads hostname, cpu, load, uptime", () => {
+    expect(host?.hostname).toBe("demo-app-01");
+    expect(host?.cpuCount).toBe(4);
+    expect(host?.load1).toBe(0.35);
+    expect(host?.uptimeSeconds).toBe(563122);
+  });
+
+  test("reads memory and swap", () => {
+    expect(host?.memTotalBytes).toBe(7789748224);
+    expect(host?.memUsedBytes).toBe(2670592000);
+    expect(host?.memAvailableBytes).toBe(5119148032);
+    expect(host?.swapUsedBytes).toBe(536870912);
+  });
+
+  test("keeps real disks and drops pseudo COS mounts", () => {
+    expect(host?.disks.length).toBe(1);
+    expect(host?.disks[0].mount).toBe("/");
+  });
+
+  test("sums physical interfaces only", () => {
+    // lo, docker0 excluded; eth0 + tailscale0 included
+    expect(host?.netRxBytes).toBe(18579456000 + 52428800);
+    expect(host?.netTxBytes).toBe(1073741824 + 31457280);
+  });
+});
+
+describe("parseContainers", () => {
+  const containers = parseContainers(splitSections(SAMPLE));
+
+  test("joins ps, stats, and inspect by name", () => {
+    expect(containers.length).toBe(2);
+    const web = containers.find((c) => c.name === "web-1");
+    expect(web?.health).toBe("healthy");
+    expect(web?.cpuPercent).toBe(9.39);
+    expect(web?.memUsageBytes).toBe(parseSize("1.254GiB"));
+    expect(web?.memLimitBytes).toBe(4 * 1024 ** 3);
+    expect(web?.memPercent).toBe(31.3);
+    const redis = containers.find((c) => c.name === "redis-1");
+    expect(redis?.restarts).toBe(2);
+  });
+});
+
+describe("parseSize", () => {
+  test("handles binary and decimal units", () => {
+    expect(parseSize("512MiB")).toBe(512 * 1024 ** 2);
+    expect(parseSize("1.5GB")).toBe(1_500_000_000);
+    expect(parseSize("bogus")).toBe(null);
+  });
+});

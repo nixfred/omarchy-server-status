@@ -1,0 +1,11 @@
+{
+  "name": "omarchy-server-status",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "status": "bun run backend/server-status.ts status",
+    "test": "bun test",
+    "check": "bun test && bun build backend/server-status.ts --target=bun --outdir=/tmp/omarchy-server-status-build"
+  }
+}
