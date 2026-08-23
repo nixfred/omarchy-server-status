@@ -24,6 +24,11 @@ Panel {
   property string activeHost: ""
 
   readonly property string sshHosts: String(setting("sshHosts", ""))
+  // Colon-separated subset of sshHosts that still shows in the panel but never
+  // fires desktop notifications (e.g. a box that is expected to flap).
+  readonly property var mutedHosts: String(setting("muteHosts", "")).split(":").map(function(entry) {
+    return entry.trim()
+  }).filter(function(entry) { return entry !== "" })
   readonly property int refreshIntervalSec: boundedInt(setting("refreshIntervalSec", 30), 10, 3600)
   readonly property int panelWidth: boundedInt(setting("panelWidth", 1000), 320, 1200)
   readonly property string backendPath: decodeURIComponent(
@@ -254,6 +259,7 @@ Panel {
   }
 
   function maybeNotify(hostAlias, previous, next) {
+    if (mutedHosts.indexOf(hostAlias) >= 0) return
     if (!previous) return
     var prevSummary = summaryForSnapshot(previous)
     var nextSummary = summaryForSnapshot(next)

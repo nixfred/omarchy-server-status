@@ -6,7 +6,9 @@
   "author": "ryuhzk",
   "license": "MIT",
   "description": "Agentless server and Docker monitoring over read-only SSH. Nothing is installed on the servers.",
-  "kinds": ["bar-widget"],
+  "kinds": [
+    "bar-widget"
+  ],
   "entryPoints": {
     "barWidget": "Panel.qml"
   },
@@ -19,7 +21,8 @@
     "defaults": {
       "sshHosts": "",
       "refreshIntervalSec": 30,
-      "panelWidth": 1000
+      "panelWidth": 1000,
+      "muteHosts": ""
     },
     "schema": [
       {
@@ -28,6 +31,13 @@
         "label": "SSH hosts",
         "defaultValue": "",
         "description": "Colon-separated ssh host aliases from ~/.ssh/config to monitor, e.g. web-1:db-1:home-nas."
+      },
+      {
+        "key": "muteHosts",
+        "type": "string",
+        "label": "Muted hosts (no notifications)",
+        "defaultValue": "",
+        "description": "Colon-separated subset of sshHosts that never fires desktop notifications."
       },
       {
         "key": "refreshIntervalSec",
