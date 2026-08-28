@@ -9,8 +9,8 @@ import qs.Ui
 Panel {
   id: root
 
-  moduleName: "ryuhzk.server-status"
-  ipcTarget: "ryuhzk.server-status"
+  moduleName: "io.github.nixfred.tailscale-host-monitor"
+  ipcTarget: "io.github.nixfred.tailscale-host-monitor"
 
   property bool refreshing: false
   property string processOutput: ""

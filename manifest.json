@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "id": "ryuhzk.server-status",
+  "id": "io.github.nixfred.tailscale-host-monitor",
   "name": "Tailscale Host Monitor",
-  "version": "0.5.0",
-  "author": "ryuhzk",
+  "version": "0.5.1",
+  "author": "nixfred",
   "license": "MIT",
   "description": "Select nodes from your Tailscale network, track every device type, and collect deep Linux metrics over read-only SSH.",
   "kinds": [

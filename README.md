@@ -95,7 +95,7 @@ omarchy plugin add file://$HOME/path/to/omarchy-server-status --enable --yes
 ## Remove
 
 ```bash
-omarchy plugin remove ryuhzk.server-status
+omarchy plugin remove io.github.nixfred.tailscale-host-monitor
 ```
 
 This unregisters the plugin and deletes its installed files. The selected-node

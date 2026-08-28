@@ -1,6 +1,6 @@
 {
-  "name": "omarchy-server-status",
-  "version": "0.5.0",
+  "name": "omarchy-tailscale-host-monitor",
+  "version": "0.5.1",
   "private": true,
   "type": "module",
   "scripts": {
