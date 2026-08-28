@@ -9,7 +9,7 @@ notifications when something crosses a threshold. It complements (not
 replaces) full monitoring stacks: no history, no server-side storage, just
 the current truth on demand.
 
-![Tailscale Host Monitor showing a privacy-masked selected host and an unreachable-host alert](assets/screenshot.png)
+![Tailscale Host Monitor showing a privacy-masked selected host and an unreachable-host alert](preview.png)
 
 The node picker discovers the tailnet with `tailscale status --json`. Only the
 nodes you select appear in the monitor. Linux nodes receive deep telemetry via
