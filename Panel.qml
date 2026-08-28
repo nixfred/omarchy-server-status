@@ -22,21 +22,69 @@ Panel {
   property var previousByHost: ({})
   property var notifiedKeyByHost: ({})
   property string activeHost: ""
+  property bool tailnetRefreshing: false
+  property double lastTailnetScanAtMs: 0
+  property string tailnetOutput: ""
+  property string tailnetProcessError: ""
+  property string tailnetError: ""
+  property string tailnetBackendState: "Unknown"
+  property var tailnetDevices: []
+  property bool pickerOpen: false
+  property bool selectionReady: false
+  property var selectedHosts: []
+  property var mutedWarningsByHost: ({})
+  property var mutedHostAlerts: []
+  property var hostFetchFailedByHost: ({})
+  property string copiedValue: ""
+  property string draggedHost: ""
+  property string draggedHostName: ""
+  property string dragTargetHost: ""
+  property bool dragAfterTarget: false
+  property real dragPointerX: 0
+  property real dragPointerY: 0
+  property real dragGhostWidth: 0
+  property real dragGhostHeight: 0
+  property var pendingWorkspaceLaunch: []
+  property bool snapshotCacheReady: false
+  property bool startupSelectionCaptured: false
+  property var startupSelectedHosts: []
+  property bool tailnetInitialScanComplete: false
+  property bool startupSweepStarted: false
+  property bool startupSweepComplete: false
+  property var startupAwaitingHosts: []
+  property int startupSweepTotal: 0
+  property int startupSweepFinished: 0
 
   readonly property string sshHosts: String(setting("sshHosts", ""))
-  // Colon-separated subset of sshHosts that still shows in the panel but never
-  // fires desktop notifications (e.g. a box that is expected to flap).
-  readonly property var mutedHosts: String(setting("muteHosts", "")).split(":").map(function(entry) {
-    return entry.trim()
-  }).filter(function(entry) { return entry !== "" })
-  readonly property int refreshIntervalSec: boundedInt(setting("refreshIntervalSec", 30), 10, 3600)
+  readonly property int legacyRefreshIntervalSec: boundedInt(setting("refreshIntervalSec", 30), 10, 3600)
+  readonly property string hostScanPreset: String(setting("hostScanPreset", "30 seconds"))
+  readonly property int customHostScanSec: boundedInt(setting("customHostScanSec", legacyRefreshIntervalSec), 10, 3600)
+  readonly property string tailnetScanPreset: String(setting("tailnetScanPreset", "5 minutes"))
+  readonly property int customTailnetScanSec: boundedInt(setting("customTailnetScanSec", 300), 30, 3600)
+  readonly property string allHostsScanPreset: String(setting("allHostsScanPreset", "5 minutes"))
+  readonly property int customAllHostsScanSec: boundedInt(setting("customAllHostsScanSec", 300), 60, 86400)
+  readonly property int hostScanIntervalSec: cadenceSeconds(hostScanPreset, customHostScanSec, legacyRefreshIntervalSec)
+  readonly property int tailnetScanIntervalSec: cadenceSeconds(tailnetScanPreset, customTailnetScanSec, 300)
+  readonly property int allHostsScanIntervalSec: cadenceSeconds(allHostsScanPreset, customAllHostsScanSec, 300)
   readonly property int panelWidth: boundedInt(setting("panelWidth", 1000), 320, 1200)
+  readonly property bool privacyMode: String(setting("privacyMode", false)).toLowerCase() === "true"
   readonly property string backendPath: decodeURIComponent(
     String(Qt.resolvedUrl("backend/server-status.ts")).replace(/^file:\/\//, ""))
+  readonly property string selectionPath: Quickshell.env("HOME") + "/.config/omarchy/server-status.json"
+  readonly property string snapshotCachePath: {
+    var configured = String(Quickshell.env("XDG_CACHE_HOME") || "").trim()
+    var directory = configured !== "" ? configured : Quickshell.env("HOME") + "/.cache"
+    return directory + "/omarchy-server-status-snapshots.json"
+  }
 
-  readonly property var hostList: sshHosts.split(":").map(function(entry) {
+  readonly property var legacyHostList: sshHosts.split(":").map(function(entry) {
     return entry.trim()
   }).filter(function(entry) { return entry !== "" })
+  readonly property var hostList: selectionReady ? selectedHosts : legacyHostList
+  readonly property var monitoredDevices: hostList.map(function(host) {
+    return root.deviceForTarget(host)
+  }).filter(function(device) { return device !== null })
+  readonly property var activeDevice: deviceForTarget(activeHost)
   readonly property var snapshot: snapshotsByHost[activeHost] || ({ host: null, containers: [], error: "" })
   readonly property var hostInfo: snapshot.host || null
   readonly property var containers: snapshot.containers instanceof Array ? snapshot.containers : []
@@ -44,6 +92,13 @@ Panel {
   readonly property color urgent: bar ? bar.urgent : Color.urgent
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
+  readonly property string barState: {
+    if (!startupSweepComplete) return "pass"
+    var state = worstState()
+    if (state === "fail") return "fail"
+    if (state === "pass") return "pass"
+    return "warn"
+  }
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
@@ -52,18 +107,429 @@ Panel {
     activeHost = hostList.length > 0 ? hostList[0] : ""
   }
 
+  function normalizedHost(value) {
+    var host = String(value || "").trim().toLowerCase()
+    var at = host.lastIndexOf("@")
+    if (at >= 0) host = host.substring(at + 1)
+    return host.replace(/\.+$/, "")
+  }
+
+  function deviceAliases(device) {
+    if (!device) return []
+    var values = [device.name, device.hostName, device.dnsName, device.sshHost]
+    var dnsShort = normalizedHost(device.dnsName).split(".")[0]
+    if (dnsShort !== "") values.push(dnsShort)
+    return values.map(normalizedHost).filter(function(value, index, all) {
+      return value !== "" && all.indexOf(value) === index
+    })
+  }
+
+  function deviceMatchesHost(device, host) {
+    var normalized = normalizedHost(host)
+    if (normalized === "") return false
+    var aliases = deviceAliases(device)
+    if (aliases.indexOf(normalized) >= 0) return true
+    var shortName = normalized.split(".")[0]
+    return aliases.indexOf(shortName) >= 0
+  }
+
+  function deviceForTarget(host) {
+    for (var index = 0; index < tailnetDevices.length; index += 1) {
+      if (deviceMatchesHost(tailnetDevices[index], host)) return tailnetDevices[index]
+    }
+    return null
+  }
+
+  function monitoredTarget(device) {
+    for (var index = 0; index < hostList.length; index += 1) {
+      if (deviceMatchesHost(device, hostList[index])) return hostList[index]
+    }
+    return ""
+  }
+
+  function configuredTarget(device) {
+    var monitored = monitoredTarget(device)
+    if (monitored !== "") return monitored
+    return device ? String(device.sshHost || device.name || "") : ""
+  }
+
+  function isMonitored(device) {
+    return monitoredTarget(device) !== ""
+  }
+
+  function saveSelection(hosts) {
+    var clean = hosts.map(function(host) { return String(host || "").trim() })
+      .filter(function(host, index, all) { return host !== "" && all.indexOf(host) === index })
+    selectedHosts = clean
+    selectionReady = true
+    writeSelection()
+  }
+
+  function sameHostList(left, right) {
+    if (!(left instanceof Array) || !(right instanceof Array) || left.length !== right.length) return false
+    for (var index = 0; index < left.length; index += 1)
+      if (String(left[index]) !== String(right[index])) return false
+    return true
+  }
+
+  function writeSelection() {
+    if (!selectionReady) return
+    selectionFile.setText(JSON.stringify({
+      version: 1,
+      monitoredHosts: selectedHosts,
+      activeHost: activeHost,
+      mutedHosts: mutedHostAlerts,
+      mutedWarnings: mutedWarningsByHost
+    }, null, 2) + "\n")
+  }
+
+  function loadSelection(raw) {
+    try {
+      var parsed = JSON.parse(String(raw || ""))
+      if (!parsed || parsed.version !== 1 || !(parsed.monitoredHosts instanceof Array))
+        throw new Error("Unsupported selection file")
+      var loadedHosts = parsed.monitoredHosts.map(String).filter(function(host) { return host.trim() !== "" })
+      if (!startupSelectionCaptured) {
+        startupSelectedHosts = loadedHosts.slice()
+        startupSelectionCaptured = true
+      }
+      if (!sameHostList(selectedHosts, loadedHosts)) selectedHosts = loadedHosts
+      var loadedMutes = ({})
+      if (parsed.mutedWarnings && typeof parsed.mutedWarnings === "object") {
+        var muteHosts = Object.keys(parsed.mutedWarnings)
+        for (var muteIndex = 0; muteIndex < muteHosts.length; muteIndex += 1) {
+          var muteHost = String(muteHosts[muteIndex])
+          var muteIds = parsed.mutedWarnings[muteHost]
+          if (muteIds instanceof Array)
+            loadedMutes[muteHost] = muteIds.map(String).filter(function(id, index, all) {
+              return id !== "" && all.indexOf(id) === index
+            })
+        }
+      }
+      mutedWarningsByHost = loadedMutes
+      mutedHostAlerts = parsed.mutedHosts instanceof Array
+        ? parsed.mutedHosts.map(String).filter(function(host, index, all) {
+            return host !== "" && all.indexOf(host) === index
+          })
+        : []
+      var savedActive = String(parsed.activeHost || "")
+      activeHost = loadedHosts.indexOf(savedActive) >= 0
+        ? savedActive
+        : (loadedHosts.length > 0 ? loadedHosts[0] : "")
+    } catch (error) {
+      selectedHosts = legacyHostList.slice()
+      mutedHostAlerts = []
+      if (!startupSelectionCaptured) {
+        startupSelectedHosts = selectedHosts.slice()
+        startupSelectionCaptured = true
+      }
+      activeHost = selectedHosts.length > 0 ? selectedHosts[0] : ""
+    }
+    selectionReady = true
+    maybeStartStartupSweep()
+    if (opened) Qt.callLater(refreshSelectedHost)
+  }
+
+  function loadSnapshotCache(raw) {
+    try {
+      var parsed = JSON.parse(String(raw || ""))
+      if (!parsed || parsed.version !== 1 || !parsed.snapshots || typeof parsed.snapshots !== "object")
+        throw new Error("Unsupported snapshot cache")
+      var loaded = ({})
+      var hosts = Object.keys(parsed.snapshots)
+      for (var index = 0; index < hosts.length; index += 1) {
+        var hostAlias = String(hosts[index])
+        var snapshotValue = parsed.snapshots[hostAlias]
+        if (snapshotValue && snapshotValue.schemaVersion === 1)
+          loaded[hostAlias] = snapshotValue
+      }
+      // A live response can beat the disk read during shell startup. Current
+      // in-memory values win so an older cache never rolls fresh data back.
+      snapshotsByHost = Object.assign({}, loaded, snapshotsByHost)
+    } catch (error) {
+      // Cache corruption is non-fatal. The next successful host response
+      // replaces the file with a clean cache.
+    }
+    snapshotCacheReady = true
+    if (Object.keys(snapshotsByHost).length > 0) snapshotCacheWriteTimer.restart()
+  }
+
+  function writeSnapshotCache() {
+    if (!snapshotCacheReady) return
+    var kept = ({})
+    var hosts = Object.keys(snapshotsByHost)
+    for (var index = 0; index < hosts.length; index += 1) {
+      var hostAlias = String(hosts[index])
+      var value = snapshotsByHost[hostAlias]
+      if (value && value.schemaVersion === 1) kept[hostAlias] = value
+    }
+    snapshotCacheFile.setText(JSON.stringify({
+      version: 1,
+      savedAt: new Date().toISOString(),
+      snapshots: kept
+    }, null, 2) + "\n")
+    snapshotCachePermissionsTimer.restart()
+  }
+
+  function scheduleSnapshotCacheWrite() {
+    if (snapshotCacheReady) snapshotCacheWriteTimer.restart()
+  }
+
+  function snapshotIsFresh(hostAlias, maxAgeSec) {
+    var value = snapshotsByHost[String(hostAlias || "")]
+    if (!value || !value.generatedAt) return false
+    var generatedAtMs = new Date(value.generatedAt).getTime()
+    if (!isFinite(generatedAtMs)) return false
+    return Date.now() - generatedAtMs < Math.max(1, Number(maxAgeSec) || 1) * 1000
+  }
+
+  function toggleMonitored(device) {
+    if (!device) return
+    var next = hostList.filter(function(host) { return !deviceMatchesHost(device, host) })
+    if (next.length === hostList.length) next.push(String(device.sshHost || device.name))
+    saveSelection(next)
+    if (isMonitored(device)) {
+      selectHost(configuredTarget(device))
+    } else if (deviceMatchesHost(device, activeHost)) {
+      selectHost(next.length > 0 ? next[0] : "")
+    }
+  }
+
+  function moveHostRelative(sourceHost, targetHost, afterTarget) {
+    var source = String(sourceHost || "")
+    var target = String(targetHost || "")
+    if (source === "" || target === "" || source === target) return
+    var next = hostList.slice()
+    var sourceIndex = next.indexOf(source)
+    if (sourceIndex < 0 || next.indexOf(target) < 0) return
+    var moved = next.splice(sourceIndex, 1)[0]
+    var targetIndex = next.indexOf(target)
+    next.splice(targetIndex + (afterTarget ? 1 : 0), 0, moved)
+    if (!sameHostList(next, hostList)) saveSelection(next)
+  }
+
+  function updateHostDrag(sourceHost, flowX, flowY) {
+    draggedHost = String(sourceHost || "")
+    dragPointerX = flowX
+    dragPointerY = flowY
+    if (flowX < -Style.space(16) || flowY < -Style.space(16)
+        || flowX > monitoredFlow.width + Style.space(16)
+        || flowY > monitoredFlow.height + Style.space(16)) {
+      dragTargetHost = ""
+      return
+    }
+    var nearestHost = ""
+    var nearestAfter = false
+    var nearestDistance = Number.POSITIVE_INFINITY
+    for (var index = 0; index < monitoredRepeater.count; index += 1) {
+      var item = monitoredRepeater.itemAt(index)
+      if (!item || item.target === draggedHost) continue
+      var origin = item.mapToItem(monitoredFlow, 0, 0)
+      var centerX = origin.x + item.width / 2
+      var centerY = origin.y + item.height / 2
+      var dx = flowX - centerX
+      var dy = flowY - centerY
+      var distance = dx * dx + dy * dy
+      if (distance < nearestDistance) {
+        nearestDistance = distance
+        nearestHost = item.target
+        nearestAfter = Math.abs(dy) <= item.height ? flowX >= centerX : flowY >= centerY
+      }
+    }
+    dragTargetHost = nearestHost
+    dragAfterTarget = nearestAfter
+  }
+
+  function finishHostDrag() {
+    var source = draggedHost
+    var target = dragTargetHost
+    var after = dragAfterTarget
+    draggedHost = ""
+    draggedHostName = ""
+    dragTargetHost = ""
+    dragAfterTarget = false
+    if (source !== "" && target !== "") moveHostRelative(source, target, after)
+  }
+
+  function cancelHostDrag() {
+    draggedHost = ""
+    draggedHostName = ""
+    dragTargetHost = ""
+    dragAfterTarget = false
+  }
+
+  function warningIds(hostAlias) {
+    var ids = mutedWarningsByHost[String(hostAlias || "")]
+    return ids instanceof Array ? ids : []
+  }
+
+  function isWarningMuted(hostAlias, warningId) {
+    return warningIds(hostAlias).indexOf(String(warningId || "")) >= 0
+  }
+
+  function isHostMuted(hostAlias) {
+    return mutedHostAlerts.indexOf(String(hostAlias || "")) >= 0
+  }
+
+  function toggleHostMute(hostAlias) {
+    var host = String(hostAlias || "")
+    if (host === "") return
+    var next = mutedHostAlerts.slice()
+    var index = next.indexOf(host)
+    if (index >= 0) next.splice(index, 1)
+    else next.push(host)
+    mutedHostAlerts = next
+    writeSelection()
+  }
+
+  function setHostFetchFailed(hostAlias, failed) {
+    var host = String(hostAlias || "")
+    if (host === "") return
+    var next = Object.assign({}, hostFetchFailedByHost)
+    if (failed) next[host] = true
+    else delete next[host]
+    hostFetchFailedByHost = next
+  }
+
+  function toggleWarningMute(hostAlias, warningId) {
+    var host = String(hostAlias || "")
+    var id = String(warningId || "")
+    if (host === "" || id === "") return
+    var nextMap = Object.assign({}, mutedWarningsByHost)
+    var nextIds = warningIds(host).slice()
+    var index = nextIds.indexOf(id)
+    if (index >= 0) nextIds.splice(index, 1)
+    else nextIds.push(id)
+    if (nextIds.length > 0) nextMap[host] = nextIds
+    else delete nextMap[host]
+    mutedWarningsByHost = nextMap
+    writeSelection()
+  }
+
+  function containerWarningId(container) {
+    return "container-" + String(container && container.name || "")
+  }
+
+  function copyText(value) {
+    var text = String(value || "")
+    if (text === "") return
+    Quickshell.execDetached(["wl-copy", text])
+    copiedValue = text
+    copyReset.restart()
+  }
+
+  function osIcon(os) {
+    var value = String(os || "").toLowerCase()
+    if (value === "linux") return "󰌽"
+    if (value === "windows") return "󰖳"
+    if (value === "macos" || value === "darwin" || value === "ios") return ""
+    if (value === "android") return "󰀲"
+    return "󰟀"
+  }
+
+  function privateHostNumber(hostAlias, device) {
+    var index = hostList.indexOf(String(hostAlias || ""))
+    if (index < 0 && device) index = tailnetDevices.indexOf(device)
+    return String(Math.max(0, index) + 1).padStart(2, "0")
+  }
+
+  function displayHostName(hostAlias, actual, device) {
+    if (!privacyMode) return String(actual || hostAlias || "Unknown")
+    return "Host " + privateHostNumber(hostAlias, device)
+  }
+
+  function displayDns(hostAlias, actual, device) {
+    if (!privacyMode) return String(actual || "")
+    return "host-" + privateHostNumber(hostAlias, device) + ".tailnet.example"
+  }
+
+  function displayIp(actual) {
+    return privacyMode && String(actual || "") !== "" ? "100.x.x.x" : String(actual || "")
+  }
+
+  function displayMetricLabel(metric) {
+    var label = String(metric && metric.label || "")
+    if (privacyMode && String(metric && metric.id || "").indexOf("disk-") === 0)
+      return "Disk volume"
+    return label
+  }
+
+  function displayMetricDetail(metric) {
+    var detail = String(metric && metric.detail || "")
+    if (!privacyMode) return detail
+    var id = String(metric && metric.id || "")
+    if (id === "uptime") return detail.split(" · ")[0]
+    if (id === "tailscale-ip") return "100.x.x.x"
+    if (id === "magic-dns") return "host.tailnet.example"
+    if (id === "tailscale-tags") return "Private tags"
+    return detail
+  }
+
+  function displayContainerName(container) {
+    if (!privacyMode) return String(container && container.name || "")
+    var index = containers.indexOf(container)
+    return "Container " + String(Math.max(0, index) + 1).padStart(2, "0")
+  }
+
+  function displayError(value) {
+    if (!privacyMode) return String(value || "")
+    return String(value || "") !== "" ? "Host telemetry is currently unavailable." : ""
+  }
+
+  function primaryIp(device) {
+    if (!device || !(device.ips instanceof Array)) return ""
+    for (var index = 0; index < device.ips.length; index += 1)
+      if (String(device.ips[index]).indexOf(":") < 0) return String(device.ips[index])
+    return device.ips.length > 0 ? String(device.ips[0]) : ""
+  }
+
+  function lastSeenText(device) {
+    if (!device) return ""
+    if (device.online) return "Online now"
+    if (!device.lastSeen) return "Offline"
+    return "Last seen " + new Date(device.lastSeen).toLocaleString()
+  }
+
   function boundedInt(value, minimum, maximum) {
     var parsed = parseInt(String(value), 10)
     if (!isFinite(parsed)) parsed = minimum
     return Math.max(minimum, Math.min(maximum, parsed))
   }
 
+  function cadenceSeconds(preset, customSeconds, fallback) {
+    var value = String(preset || "")
+    if (value === "15 seconds") return 15
+    if (value === "30 seconds") return 30
+    if (value === "1 minute") return 60
+    if (value === "5 minutes") return 300
+    if (value === "15 minutes") return 900
+    if (value === "30 minutes") return 1800
+    if (value === "1 hour") return 3600
+    if (value === "Custom") return Number(customSeconds) || fallback
+    return fallback
+  }
+
+  function cadenceText(seconds) {
+    var value = Number(seconds) || 0
+    if (value >= 3600 && value % 3600 === 0) return (value / 3600) + "h"
+    if (value >= 60 && value % 60 === 0) return (value / 60) + "m"
+    return value + "s"
+  }
+
   function stateColor(state) {
     if (state === "pass") return "#69c58a"
     if (state === "running") return Color.accent
     if (state === "warn") return "#e5b45d"
-    if (state === "fail") return root.urgent
+    if (state === "fail") return "#e66a6a"
+    if (state === "muted") return root.dim
     return root.dim
+  }
+
+  function barStateText() {
+    if (!startupSweepComplete) return startupProgressText()
+    if (barState === "fail") return "Critical"
+    if (barState === "warn") return "Warning / awaiting data"
+    return "Healthy"
   }
 
   function stateGlyph(state) {
@@ -72,6 +538,7 @@ Panel {
     if (state === "warn") return "!"
     if (state === "fail") return "×"
     if (state === "idle") return "·"
+    if (state === "muted") return "−"
     return "?"
   }
 
@@ -149,6 +616,29 @@ Panel {
     return rows
   }
 
+  function tailnetRows(device) {
+    if (!device) return []
+    var rows = [{
+      id: "tailscale-status",
+      label: "Tailscale",
+      state: device.online ? "pass" : "fail",
+      detail: lastSeenText(device),
+      value: 0
+    }, {
+      id: "device-type",
+      label: "Device type",
+      state: "pass",
+      detail: device.kind + " · " + String(device.os || "unknown"),
+      value: 0
+    }]
+    var ip = primaryIp(device)
+    if (ip !== "") rows.push({ id: "tailscale-ip", label: "Tailscale IP", state: "pass", detail: ip, value: 0 })
+    if (device.dnsName) rows.push({ id: "magic-dns", label: "MagicDNS", state: "pass", detail: device.dnsName, value: 0 })
+    if (device.tags instanceof Array && device.tags.length > 0)
+      rows.push({ id: "tailscale-tags", label: "Tags", state: "pass", detail: device.tags.join(", "), value: 0 })
+    return rows
+  }
+
   function containerState(container) {
     if (container.oomKilled) return "fail"
     if (container.state === "running") {
@@ -173,17 +663,25 @@ Panel {
   }
 
   function summaryFor(hostAlias) {
+    if (isHostMuted(hostAlias)) return "pass"
+    var device = deviceForTarget(hostAlias)
+    if (!device) return tailnetInitialScanComplete ? "fail" : "unknown"
+    if (device && !device.online) return "fail"
+    if (device && !device.supportsMetrics) return "pass"
+    if (hostFetchFailedByHost[hostAlias] === true) return "fail"
     var snap = snapshotsByHost[hostAlias]
     if (!snap) return "unknown"
-    if (snap.error) return "unknown"
+    if (snap.error) return "fail"
     var worst = "pass"
     var rows = hostRows(snap.host, null, 0)
     for (var index = 0; index < rows.length; index += 1) {
+      if (isWarningMuted(hostAlias, rows[index].id)) continue
       if (rows[index].state === "fail") return "fail"
       if (rows[index].state === "warn") worst = "warn"
     }
     var list = snap.containers instanceof Array ? snap.containers : []
     for (var c = 0; c < list.length; c += 1) {
+      if (isWarningMuted(hostAlias, containerWarningId(list[c]))) continue
       var state = containerState(list[c])
       if (state === "fail") return "fail"
       if (state === "warn") worst = "warn"
@@ -192,28 +690,138 @@ Panel {
   }
 
   function worstState() {
+    if (tailnetError !== "") return "unknown"
     var order = ["fail", "warn", "unknown", "pass"]
     var worst = "unknown"
     var rank = order.length
     var sawAny = false
-    for (var index = 0; index < hostList.length; index += 1) {
-      if (!snapshotsByHost[hostList[index]]) continue
+    var targets = hostList
+    for (var index = 0; index < targets.length; index += 1) {
       sawAny = true
-      var state = summaryFor(hostList[index])
+      var state = summaryFor(targets[index])
       var current = order.indexOf(state)
       if (current >= 0 && current < rank) { rank = current; worst = order[current] }
     }
     return sawAny ? worst : "unknown"
   }
 
+  function hostIndicatorState(hostAlias) {
+    return startupSweepComplete ? summaryFor(hostAlias) : "pass"
+  }
+
+  function maybeStartStartupSweep() {
+    if (startupSweepStarted || !selectionReady || !tailnetInitialScanComplete) return
+    startupSweepStarted = true
+    startupSweepTotal = startupSelectedHosts.length
+    var targets = []
+    for (var index = 0; index < startupSelectedHosts.length; index += 1) {
+      var hostAlias = String(startupSelectedHosts[index] || "")
+      var device = deviceForTarget(hostAlias)
+      if (device && device.online && device.supportsMetrics) targets.push(hostAlias)
+    }
+    startupAwaitingHosts = targets.slice()
+    startupSweepFinished = Math.max(0, startupSweepTotal - targets.length)
+    if (targets.length === 0) {
+      startupSweepComplete = true
+      return
+    }
+    enqueue(targets)
+  }
+
+  function finishStartupHost(hostAlias) {
+    var waiting = startupAwaitingHosts.slice()
+    var index = waiting.indexOf(String(hostAlias || ""))
+    if (index < 0) return
+    waiting.splice(index, 1)
+    startupAwaitingHosts = waiting
+    startupSweepFinished = Math.min(startupSweepTotal, startupSweepFinished + 1)
+    if (waiting.length === 0) startupSweepComplete = true
+  }
+
+  function startupProgressText() {
+    if (startupSweepComplete) return "Startup scan complete"
+    if (!startupSweepStarted) return "Preparing startup scan"
+    return `Startup scan ${startupSweepFinished}/${startupSweepTotal}`
+  }
+
   function selectHost(hostAlias) {
     if (activeHost === hostAlias) return
     activeHost = hostAlias
-    if (!snapshotsByHost[hostAlias]) refresh()
+    writeSelection()
+    refreshSelectedHost(false)
   }
 
-  function refresh() { enqueue([activeHost]) }
-  function refreshAll() { enqueue(hostList) }
+  function selectDevice(device) {
+    if (!device || !isMonitored(device)) return
+    selectHost(configuredTarget(device))
+  }
+
+  function metricTargets() {
+    if (tailnetDevices.length === 0) return []
+    var targets = []
+    for (var index = 0; index < monitoredDevices.length; index += 1) {
+      var device = monitoredDevices[index]
+      if (device.online && device.supportsMetrics) targets.push(configuredTarget(device))
+    }
+    return targets
+  }
+
+  function refresh() {
+    refreshTailnet()
+    refreshSelectedHost(true)
+  }
+
+  function refreshSelectedHost(force) {
+    if (!startupSweepComplete) return
+    var device = activeDevice
+    if (!device || !device.online || !device.supportsMetrics) return
+    if (!force && snapshotIsFresh(activeHost, hostScanIntervalSec)) return
+    enqueue([activeHost])
+  }
+
+  function refreshAll() {
+    refreshTailnet()
+    refreshAllHosts()
+  }
+
+  function refreshAllHosts() {
+    if (!startupSweepComplete) return
+    enqueue(metricTargets())
+  }
+
+  function refreshTailnetIfStale() {
+    if (Date.now() - lastTailnetScanAtMs >= tailnetScanIntervalSec * 1000)
+      refreshTailnet()
+  }
+
+  function refreshTailnet() {
+    if (tailnetProcess.running) return
+    tailnetOutput = ""
+    tailnetProcessError = ""
+    tailnetRefreshing = true
+    tailnetProcess.command = ["bun", "run", backendPath, "tailnet", "--compact"]
+    tailnetProcess.running = true
+  }
+
+  function storeTailnet(raw) {
+    try {
+      var parsed = JSON.parse(String(raw || ""))
+      if (!parsed || parsed.schemaVersion !== 1 || !(parsed.devices instanceof Array))
+        throw new Error("Unsupported tailnet snapshot")
+      tailnetBackendState = String(parsed.backendState || "Unknown")
+      tailnetError = String(parsed.error || "")
+      tailnetDevices = parsed.devices
+      lastTailnetScanAtMs = Date.now()
+      tailnetInitialScanComplete = true
+      if (!activeDevice || !isMonitored(activeDevice))
+        selectHost(monitoredDevices.length > 0 ? configuredTarget(monitoredDevices[0]) : "")
+      if (opened && activeDevice && activeDevice.online && activeDevice.supportsMetrics)
+        refreshSelectedHost(false)
+      maybeStartStartupSweep()
+    } catch (error) {
+      tailnetError = "Could not read Tailscale network: " + String(error)
+    }
+  }
 
   function enqueue(hosts) {
     var queue = pendingHosts.slice()
@@ -227,7 +835,7 @@ Panel {
   }
 
   function pump() {
-    if (statusProcess.running) return
+    if (statusProcess.running || startupPaceTimer.running) return
     if (pendingHosts.length === 0) { refreshing = false; return }
     var queue = pendingHosts.slice()
     fetchHost = queue.shift()
@@ -243,6 +851,7 @@ Panel {
     try {
       var parsed = JSON.parse(String(raw || ""))
       if (!parsed || parsed.schemaVersion !== 1) throw new Error("Unsupported snapshot")
+      setHostFetchFailed(hostAlias, String(parsed.error || "") !== "")
       var previous = snapshotsByHost[hostAlias]
       maybeNotify(hostAlias, previous, parsed)
       var previousMap = Object.assign({}, previousByHost)
@@ -251,6 +860,7 @@ Panel {
       var merged = Object.assign({}, snapshotsByHost)
       merged[hostAlias] = parsed
       snapshotsByHost = merged
+      scheduleSnapshotCacheWrite()
       if (hostAlias === activeHost) lastError = parsed.error || ""
     } catch (error) {
       if (hostAlias === activeHost)
@@ -259,27 +869,30 @@ Panel {
   }
 
   function maybeNotify(hostAlias, previous, next) {
-    if (mutedHosts.indexOf(hostAlias) >= 0) return
+    if (!startupSweepComplete) return
+    if (isHostMuted(hostAlias)) return
     if (!previous) return
-    var prevSummary = summaryForSnapshot(previous)
-    var nextSummary = summaryForSnapshot(next)
+    var prevSummary = summaryForSnapshot(previous, hostAlias)
+    var nextSummary = summaryForSnapshot(next, hostAlias)
     if (prevSummary === nextSummary) return
+    var device = deviceForTarget(hostAlias)
+    var notificationHost = displayHostName(hostAlias, device ? device.name : hostAlias, device)
     var title = ""
     var urgency = "normal"
     if (nextSummary === "fail") {
-      title = "Server alert · " + hostAlias
+      title = "Server alert · " + notificationHost
       urgency = "critical"
     } else if (nextSummary === "warn" && prevSummary === "pass") {
-      title = "Server warning · " + hostAlias
+      title = "Server warning · " + notificationHost
     } else if (nextSummary === "pass" && (prevSummary === "fail" || prevSummary === "warn")) {
-      title = "Server recovered · " + hostAlias
+      title = "Server recovered · " + notificationHost
     } else if (nextSummary === "unknown" && prevSummary !== "unknown") {
-      title = "Server unreachable · " + hostAlias
+      title = "Server unreachable · " + notificationHost
       urgency = "critical"
     } else {
       return
     }
-    var body = describeProblems(next) || String(next.error || "All metrics back within thresholds")
+    var body = describeProblems(next, hostAlias) || String(next.error || "All metrics back within thresholds")
     var key = hostAlias + "|" + nextSummary + "|" + body
     if (notifiedKeyByHost[hostAlias] === key) return
     var keys = Object.assign({}, notifiedKeyByHost)
@@ -288,16 +901,19 @@ Panel {
     Quickshell.execDetached(["notify-send", "-a", "Server Status", "-u", urgency, title, body])
   }
 
-  function summaryForSnapshot(snap) {
-    if (!snap || snap.error) return "unknown"
+  function summaryForSnapshot(snap, hostAlias) {
+    if (!snap) return "unknown"
+    if (snap.error) return "fail"
     var worst = "pass"
     var rows = hostRows(snap.host, null, 0)
     for (var index = 0; index < rows.length; index += 1) {
+      if (isWarningMuted(hostAlias, rows[index].id)) continue
       if (rows[index].state === "fail") return "fail"
       if (rows[index].state === "warn") worst = "warn"
     }
     var list = snap.containers instanceof Array ? snap.containers : []
     for (var c = 0; c < list.length; c += 1) {
+      if (isWarningMuted(hostAlias, containerWarningId(list[c]))) continue
       var state = containerState(list[c])
       if (state === "fail") return "fail"
       if (state === "warn") worst = "warn"
@@ -305,16 +921,18 @@ Panel {
     return worst
   }
 
-  function describeProblems(snap) {
+  function describeProblems(snap, hostAlias) {
     if (!snap) return ""
     var problems = []
     var rows = hostRows(snap.host, null, 0)
     for (var index = 0; index < rows.length; index += 1) {
+      if (isWarningMuted(hostAlias, rows[index].id)) continue
       if (rows[index].state === "fail" || rows[index].state === "warn")
         problems.push(rows[index].label + " " + Math.round(rows[index].value * 100) + "%")
     }
     var list = snap.containers instanceof Array ? snap.containers : []
     for (var c = 0; c < list.length; c += 1) {
+      if (isWarningMuted(hostAlias, containerWarningId(list[c]))) continue
       var state = containerState(list[c])
       if (state === "fail" || state === "warn")
         problems.push(list[c].name + ": " + (list[c].health !== "none" ? list[c].health : list[c].state))
@@ -330,38 +948,56 @@ Panel {
     return isFinite(elapsed) && elapsed > 0 ? elapsed : 0
   }
 
+  function launchInNewWorkspace(args) {
+    if (!(args instanceof Array) || args.length === 0 || workspaceProcess.running) return
+    pendingWorkspaceLaunch = args.slice()
+    root.close()
+    // Switch first and wait for Hyprland to confirm it. This is reliable for
+    // launchers such as uwsm-app that may fork before creating their window.
+    Qt.callLater(function() {
+      workspaceProcess.command = ["hyprctl", "dispatch", "workspace", "empty"]
+      workspaceProcess.running = true
+    })
+  }
+
   function openTerminal() {
-    if (activeHost === "") return
-    Quickshell.execDetached(["uwsm-app", "--", "xdg-terminal-exec", "--", "ssh", "-t", activeHost])
+    if (activeHost === "" || !activeDevice || !activeDevice.online || !activeDevice.supportsMetrics) return
+    launchInNewWorkspace(["uwsm-app", "--", "xdg-terminal-exec", "--", "ssh", "-t", activeHost])
   }
 
   function openBtop() {
-    if (activeHost === "") return
-    Quickshell.execDetached(["uwsm-app", "--", "xdg-terminal-exec", "--", "ssh", "-t", activeHost, "btop || htop || top"])
+    if (activeHost === "" || !activeDevice || !activeDevice.online || !activeDevice.supportsMetrics) return
+    launchInNewWorkspace(["uwsm-app", "--", "xdg-terminal-exec", "--", "ssh", "-t", activeHost, "btop || htop || top"])
   }
 
   function openSettings() {
-    Quickshell.execDetached(["omarchy-launch-editor", Quickshell.env("HOME") + "/.config/omarchy/shell.json"])
+    launchInNewWorkspace(["omarchy-launch-editor", selectionPath])
   }
 
-  onOpenedChanged: if (opened) refresh()
+  onOpenedChanged: if (opened) {
+    refreshTailnetIfStale()
+    refreshSelectedHost(false)
+  }
   // Settings can land after component creation; whenever the derived host
   // list changes, repair the active selection and refetch.
   onHostListChanged: {
-    if (hostList.indexOf(activeHost) < 0) activeHost = hostList.length > 0 ? hostList[0] : ""
-    Qt.callLater(refreshAll)
+    var current = deviceForTarget(activeHost)
+    if (hostList.indexOf(activeHost) < 0 && (!current || !isMonitored(current)))
+      activeHost = hostList.length > 0 ? hostList[0] : ""
+    Qt.callLater(refreshTailnetIfStale)
   }
 
   BarIconButton {
     id: button
     anchors.fill: parent
-    tooltipText: `${root.activeHost || "Server Status"} · ${root.summaryFor(root.activeHost)}`
+    bar: root.bar
+    tooltipText: `Tailscale Host Monitor · ${root.barStateText()} · ${root.activeDevice ? root.displayHostName(root.activeHost, root.activeDevice.name, root.activeDevice) : (root.activeHost ? root.displayHostName(root.activeHost, root.activeHost, null) : "no nodes")}`
     iconComponent: Component {
       Item {
         Text {
           anchors.centerIn: parent
           text: "󰒋"
-          color: root.stateColor(root.summaryFor(root.activeHost) === "pass" ? "pass" : root.summaryFor(root.activeHost))
+          color: root.stateColor(root.barState)
           font.family: root.fontFamily
           font.pixelSize: Style.bar.iconFont
         }
@@ -372,13 +1008,19 @@ Panel {
           width: Style.space(5)
           height: width
           radius: width / 2
-          color: root.stateColor(root.worstState())
+          color: root.stateColor(root.barState)
+          border.width: 1
+          border.color: Util.alpha(root.foreground, 0.75)
         }
       }
     }
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.MiddleButton) root.refreshAll()
-      else if (buttonCode === Qt.RightButton) root.openTerminal()
+      // Qt 6.11 synthesizes a context-menu event after delivering a right
+      // click. Opening a terminal here can move focus and tear down panel
+      // items while Qt is still walking the scene for that event, crashing
+      // in QQuickItem::mapToScene(). Let delivery finish before launching.
+      else if (buttonCode === Qt.RightButton) Qt.callLater(function() { root.openTerminal() })
       else root.toggle()
     }
   }
@@ -391,7 +1033,7 @@ Panel {
     open: root.opened
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(root.panelWidth))
-    contentHeight: panel.fittedContentHeight(contentColumn.implicitHeight, Style.space(680))
+    contentHeight: panel.fittedContentHeight(contentColumn.implicitHeight)
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -410,26 +1052,24 @@ Panel {
         }
       }
 
-      Flickable {
-        anchors.fill: parent
-        contentWidth: width
-        contentHeight: contentColumn.implicitHeight
-        clip: true
-        boundsBehavior: Flickable.StopAtBounds
-        flickableDirection: Flickable.VerticalFlick
-        interactive: contentHeight > height
-        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-        Column {
-          id: contentColumn
-          width: parent.width
-          spacing: Style.space(12)
+      Column {
+        id: contentColumn
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        spacing: Style.space(10)
 
           PanelHero {
             width: parent.width
-            title: root.hostInfo ? root.hostInfo.hostname : (root.activeHost || "Server Status")
-            meta: root.activeHost + " · " + root.summaryFor(root.activeHost)
-            detail: root.hostInfo ? root.formatUptime(root.hostInfo.uptimeSeconds) : ""
+            title: root.hostInfo
+              ? root.displayHostName(root.activeHost, root.hostInfo.hostname, root.activeDevice)
+              : (root.activeDevice ? root.displayHostName(root.activeHost, root.activeDevice.name, root.activeDevice) : "No monitored nodes")
+            meta: root.activeDevice
+              ? `TAILSCALE HOST MONITOR · SELECTED HOST`
+              : "TAILSCALE HOST MONITOR"
+            detail: root.activeDevice
+              ? `${root.activeDevice.kind} · ${root.displayDns(root.activeHost, root.activeDevice.dnsName || root.activeHost, root.activeDevice)}`
+              : "Choose which Tailscale nodes this dashboard monitors"
             foreground: root.foreground
             fontFamily: root.fontFamily
             iconComponent: Component {
@@ -440,7 +1080,7 @@ Panel {
                 Text {
                   anchors.centerIn: parent
                   text: "󰒋"
-                  color: root.stateColor(root.summaryFor(root.activeHost))
+                  color: root.activeHost === "" ? root.dim : root.stateColor(root.hostIndicatorState(root.activeHost))
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.display
                 }
@@ -449,27 +1089,35 @@ Panel {
           }
 
           Flow {
+            id: monitoredFlow
             width: parent.width
             spacing: Style.space(6)
-            visible: root.hostList.length > 1
 
             Repeater {
-              model: root.hostList
+              id: monitoredRepeater
+              model: root.monitoredDevices
 
               Rectangle {
                 required property var modelData
-                readonly property bool active: modelData === root.activeHost
-                width: chipLabel.implicitWidth + Style.space(20)
-                height: chipLabel.implicitHeight + Style.space(10)
+                readonly property string target: root.configuredTarget(modelData)
+                readonly property bool active: target === root.activeHost
+                width: monitoredChipContent.implicitWidth + Style.space(20)
+                height: monitoredChipContent.implicitHeight + Style.space(10)
                 radius: height / 2
                 color: active
-                  ? Util.alpha(root.stateColor(root.summaryFor(modelData)), 0.22)
-                  : Util.alpha(root.foreground, 0.07)
-                border.width: active ? 1 : 0
-                border.color: root.stateColor(root.summaryFor(modelData))
+                  ? Util.alpha(root.stateColor(root.hostIndicatorState(target)), 0.22)
+                  : (root.dragTargetHost === target
+                    ? Util.alpha(Color.accent, 0.2)
+                    : Util.alpha(root.foreground, 0.07))
+                border.width: active || root.dragTargetHost === target ? 1 : 0
+                border.color: root.dragTargetHost === target ? Color.accent : root.stateColor(root.hostIndicatorState(target))
+                opacity: root.draggedHost === target ? 0.18 : (modelData.online ? 1 : 0.7)
+                scale: root.dragTargetHost === target ? 1.05 : 1
+
+                Behavior on scale { NumberAnimation { duration: 90 } }
 
                 Row {
-                  id: chipLabel
+                  id: monitoredChipContent
                   anchors.centerIn: parent
                   spacing: Style.space(5)
 
@@ -478,125 +1126,361 @@ Panel {
                     width: Style.space(7)
                     height: width
                     radius: width / 2
-                    color: root.stateColor(root.summaryFor(parent.parent.modelData))
+                    color: root.stateColor(root.hostIndicatorState(target))
                   }
 
                   Text {
-                    text: parent.parent.modelData
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: root.displayHostName(target, modelData.name, modelData)
                     color: root.foreground
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.bodySmall
                   }
                 }
 
+                Rectangle {
+                  visible: root.dragTargetHost === target
+                  x: root.dragAfterTarget ? parent.width + Style.space(2) : -Style.space(5)
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: Style.space(3)
+                  height: parent.height + Style.space(6)
+                  radius: width / 2
+                  color: Color.accent
+                  z: 4
+                }
+
                 MouseArea {
+                  id: monitoredMouse
+                  property bool dragging: false
+                  property bool suppressClick: false
+                  property real pressedX: 0
+                  property real pressedY: 0
                   anchors.fill: parent
-                  cursorShape: Qt.PointingHandCursor
-                  onClicked: root.selectHost(parent.modelData)
+                  acceptedButtons: Qt.LeftButton | Qt.RightButton
+                  cursorShape: dragging ? Qt.ClosedHandCursor : Qt.PointingHandCursor
+
+                  onPressed: function(mouse) {
+                    dragging = false
+                    suppressClick = false
+                    pressedX = mouse.x
+                    pressedY = mouse.y
+                  }
+
+                  onPositionChanged: function(mouse) {
+                    if (!(mouse.buttons & Qt.LeftButton)) return
+                    var distance = Math.abs(mouse.x - pressedX) + Math.abs(mouse.y - pressedY)
+                    if (!dragging && distance >= Style.space(5)) {
+                      dragging = true
+                      suppressClick = true
+                      root.draggedHost = parent.target
+                      root.draggedHostName = root.displayHostName(parent.target, parent.modelData.name, parent.modelData)
+                      root.dragGhostWidth = parent.width
+                      root.dragGhostHeight = parent.height
+                    }
+                    if (dragging) {
+                      var point = parent.mapToItem(monitoredFlow, mouse.x, mouse.y)
+                      root.updateHostDrag(parent.target, point.x, point.y)
+                    }
+                  }
+
+                  onReleased: function(mouse) {
+                    if (!dragging) return
+                    dragging = false
+                    root.finishHostDrag()
+                    mouse.accepted = true
+                  }
+
+                  onCanceled: {
+                    dragging = false
+                    suppressClick = false
+                    root.cancelHostDrag()
+                  }
+
+                  onClicked: function(mouse) {
+                    if (suppressClick) {
+                      suppressClick = false
+                      mouse.accepted = true
+                      return
+                    }
+                    root.selectDevice(parent.modelData)
+                    if (mouse.button === Qt.RightButton && parent.modelData.online && parent.modelData.supportsMetrics)
+                      Qt.callLater(root.openTerminal)
+                  }
+                }
+
+              }
+            }
+
+            Rectangle {
+              id: manageNodesButton
+              width: manageNodesLabel.implicitWidth + Style.space(18)
+              height: Style.space(28)
+              radius: height / 2
+              color: root.pickerOpen ? Util.alpha(Color.accent, 0.2) : Util.alpha(root.foreground, 0.07)
+              border.width: root.pickerOpen ? 1 : 0
+              border.color: Color.accent
+
+              Text {
+                id: manageNodesLabel
+                anchors.centerIn: parent
+                text: root.pickerOpen ? "Done" : "+"
+                color: root.pickerOpen ? Color.accent : root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                font.bold: true
+              }
+
+              MouseArea {
+                id: manageNodesMouse
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.pickerOpen = !root.pickerOpen
+              }
+            }
+          }
+
+          Column {
+            width: parent.width
+            spacing: Style.space(7)
+            visible: root.pickerOpen
+
+            Text {
+              width: parent.width
+              text: `${root.tailnetDevices.length} Tailscale nodes · click to add or remove · offline nodes remain available`
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Flow {
+              id: pickerFlow
+              width: parent.width
+              spacing: Style.space(4)
+
+              Repeater {
+                model: root.tailnetDevices
+
+                Rectangle {
+                  required property var modelData
+                  readonly property bool selected: root.isMonitored(modelData)
+                  width: (pickerFlow.width - Style.space(24)) / 7
+                  height: Style.space(34)
+                  radius: height / 2
+                  color: selected ? Util.alpha(Color.accent, 0.16) : Util.alpha(root.foreground, 0.05)
+                  border.width: selected ? 1 : 0
+                  border.color: Color.accent
+                  opacity: modelData.online ? 1 : 0.65
+
+                  Row {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.leftMargin: Style.space(9)
+                    anchors.rightMargin: Style.space(9)
+                    spacing: Style.space(5)
+
+                    Text {
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: root.osIcon(modelData.os)
+                      color: modelData.online ? "#69c58a" : root.dim
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.bodySmall
+                    }
+
+                    Text {
+                      width: parent.width - Style.space(30)
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: root.displayHostName(root.configuredTarget(modelData), modelData.name, modelData)
+                      color: root.foreground
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.bodySmall
+                      font.bold: selected
+                      elide: Text.ElideRight
+                    }
+
+                    Text {
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: selected ? "✓" : "+"
+                      color: selected ? Color.accent : root.foreground
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.bodySmall
+                      font.bold: true
+                    }
+                  }
+
+                  MouseArea {
+                    id: pickerMouse
+                    anchors.fill: parent
+                    acceptedButtons: Qt.LeftButton
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.toggleMonitored(parent.modelData)
+                  }
                 }
               }
             }
           }
 
+          Item {
+            width: parent.width
+            height: Style.space(34)
+            visible: root.activeDevice !== null
+
+            PanelSectionHeader {
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              text: "SELECTED HOST"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Row {
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              spacing: Style.space(7)
+
+              PanelActionButton {
+                iconText: root.refreshing || root.tailnetRefreshing ? "󰑓" : "󰑐"
+                tooltipText: root.refreshing || root.tailnetRefreshing ? "Refreshing" : "Refresh selected host and Tailscale now (r)"
+                foreground: root.foreground
+                enabled: !root.refreshing && !root.tailnetRefreshing
+                onClicked: root.refresh()
+              }
+
+              PanelActionButton {
+                iconText: "󰆍"
+                tooltipText: "SSH terminal (T)"
+                foreground: root.foreground
+                enabled: root.activeDevice && root.activeDevice.online && root.activeDevice.supportsMetrics
+                onClicked: root.openTerminal()
+              }
+
+              PanelActionButton {
+                iconText: "󰄨"
+                tooltipText: "btop over SSH (B)"
+                foreground: root.foreground
+                enabled: root.activeDevice && root.activeDevice.online && root.activeDevice.supportsMetrics
+                onClicked: root.openBtop()
+              }
+
+              PanelActionButton {
+                iconText: "󰒓"
+                tooltipText: "Edit monitored-node selection (E)"
+                foreground: root.foreground
+                onClicked: root.openSettings()
+              }
+            }
+          }
+
+          Rectangle {
+            width: parent.width
+            height: Style.space(94)
+            radius: Style.cornerRadius
+            color: Util.alpha(root.foreground, 0.055)
+            border.width: 1
+            border.color: Util.alpha(root.stateColor(root.hostIndicatorState(root.activeHost)), 0.45)
+            visible: root.activeDevice !== null
+
+            RowLayout {
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.top: parent.top
+              anchors.leftMargin: Style.space(14)
+              anchors.rightMargin: Style.space(14)
+              anchors.topMargin: Style.space(12)
+              spacing: Style.space(18)
+
+              InfoField {
+                Layout.preferredWidth: Style.space(135)
+                label: "STATUS"
+                value: root.activeDevice && root.activeDevice.online ? "Online" : "Offline"
+                valueColor: root.activeDevice && root.activeDevice.online ? "#69c58a" : root.urgent
+              }
+
+              InfoField {
+                Layout.fillWidth: true
+                label: "LAST SEEN"
+                value: root.lastSeenText(root.activeDevice)
+              }
+
+              InfoField {
+                Layout.fillWidth: true
+                readonly property string address: root.primaryIp(root.activeDevice)
+                label: root.copiedValue === address ? "TAILSCALE IP · COPIED" : "TAILSCALE IP · CLICK TO COPY"
+                value: root.displayIp(root.primaryIp(root.activeDevice)) || "Unavailable"
+                valueColor: root.copiedValue === address ? Color.accent : root.foreground
+                clickable: address !== ""
+                onActivated: root.copyText(address)
+              }
+
+              InfoField {
+                Layout.fillWidth: true
+                label: "DEVICE"
+                value: root.activeDevice ? root.activeDevice.kind : "Unknown"
+              }
+
+              InfoField {
+                Layout.preferredWidth: Style.space(125)
+                label: "HOST ALERTS · CLICK"
+                value: root.isHostMuted(root.activeHost) ? "Muted" : "Active"
+                valueColor: root.isHostMuted(root.activeHost) ? root.dim : "#69c58a"
+                clickable: root.activeHost !== ""
+                onActivated: root.toggleHostMute(root.activeHost)
+              }
+            }
+
+            Text {
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.bottom: parent.bottom
+              anchors.leftMargin: Style.space(14)
+              anchors.rightMargin: Style.space(14)
+              anchors.bottomMargin: Style.space(9)
+              text: root.startupSweepComplete
+                ? `Scan cadence · selected ${root.cadenceText(root.hostScanIntervalSec)} · Tailscale ${root.cadenceText(root.tailnetScanIntervalSec)} · all monitored ${root.cadenceText(root.allHostsScanIntervalSec)}`
+                : `${root.startupProgressText()} · sequential SSH · 2s between hosts`
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              elide: Text.ElideRight
+            }
+          }
+
           Text {
             width: parent.width
-            text: root.hostList.length === 0
-              ? "No servers configured. Add colon-separated ssh host aliases from ~/.ssh/config in this widget's settings (sshHosts), e.g. web-1:db-1."
-              : root.lastError
+            text: root.displayError(root.tailnetError !== "" ? root.tailnetError : root.lastError)
             visible: text !== ""
-            color: root.hostList.length === 0 ? root.dim : root.urgent
+            color: root.urgent
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
             wrapMode: Text.WordWrap
           }
 
-          Row {
-            spacing: Style.space(8)
-
-            PanelActionButton {
-              iconText: root.refreshing ? "󰑓" : "󰑐"
-              tooltipText: root.refreshing ? "Refreshing" : "Refresh (r), all hosts (R)"
-              foreground: root.foreground
-              enabled: !root.refreshing
-              onClicked: root.refresh()
-            }
-
-            PanelActionButton {
-              iconText: "󰆍"
-              tooltipText: "SSH terminal (T)"
-              foreground: root.foreground
-              onClicked: root.openTerminal()
-            }
-
-            PanelActionButton {
-              iconText: "󰄨"
-              tooltipText: "btop over SSH (B)"
-              foreground: root.foreground
-              onClicked: root.openBtop()
-            }
-
-            PanelActionButton {
-              iconText: "󰒓"
-              tooltipText: "Edit settings in shell.json (E)"
-              foreground: root.foreground
-              onClicked: root.openSettings()
-            }
-          }
-
-          PanelSeparator { foreground: root.foreground }
-
-          Row {
-            id: metricColumns
+          Column {
             width: parent.width
-            spacing: Style.space(16)
-            readonly property bool twoColumns: root.containers.length > 0
-            readonly property real columnWidth: twoColumns ? (width - spacing) / 2 : width
+            spacing: Style.space(8)
+            visible: !root.pickerOpen && root.activeDevice && root.activeDevice.online && root.activeDevice.supportsMetrics && root.hostInfo
 
-            Column {
-              width: metricColumns.columnWidth
-              spacing: Style.space(4)
+            PanelSectionHeader {
+              text: `HOST OVERVIEW · UP ${root.formatUptime(root.hostInfo ? root.hostInfo.uptimeSeconds : 0)}`
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
 
-              PanelSectionHeader {
-                text: "HOST"
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-              }
+            Flow {
+              id: hostMetricFlow
+              width: parent.width
+              spacing: Style.space(8)
 
               Repeater {
                 model: root.hostRows(root.hostInfo, root.previousByHost[root.activeHost], root.elapsedSince(root.activeHost))
 
-                MetricRow {
+                MetricTile {
                   required property var modelData
-                  width: parent.width
+                  width: (hostMetricFlow.width - Style.space(24)) / 4
                   metric: modelData
-                }
-              }
-            }
-
-            Column {
-              width: metricColumns.columnWidth
-              spacing: Style.space(4)
-              visible: metricColumns.twoColumns
-
-              PanelSectionHeader {
-                text: `CONTAINERS · ${root.containers.length}`
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-              }
-
-              Repeater {
-                model: root.containers
-
-                MetricRow {
-                  required property var modelData
-                  width: parent.width
-                  metric: ({
-                    id: "container-" + modelData.name,
-                    label: modelData.name,
-                    state: root.containerState(modelData),
-                    detail: root.containerDetail(modelData),
-                    value: modelData.memPercent !== null ? modelData.memPercent / 100 : 0
-                  })
+                  hostAlias: root.activeHost
+                  allowMute: true
                 }
               }
             }
@@ -604,16 +1488,130 @@ Panel {
 
           Text {
             width: parent.width
-            text: snapshot.generatedAt ? `Updated ${new Date(snapshot.generatedAt).toLocaleTimeString()}` : ""
+            visible: !root.pickerOpen && root.activeDevice && root.activeDevice.online && root.activeDevice.supportsMetrics && !root.hostInfo
+            text: root.refreshing
+              ? `Loading ${root.displayHostName(root.activeHost, root.activeDevice.name, root.activeDevice)} host information…`
+              : "Host information is not available yet."
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            wrapMode: Text.WordWrap
+          }
+
+          Column {
+            width: parent.width
+            spacing: Style.space(8)
+            visible: !root.pickerOpen && root.activeDevice && root.containers.length > 0
+
+            PanelSectionHeader {
+              text: `CONTAINERS · ${root.containers.length}`
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Flow {
+              id: containerFlow
+              width: parent.width
+              spacing: Style.space(8)
+              readonly property int columns: root.containers.length > 20 ? 6 : (root.containers.length > 9 ? 4 : 3)
+
+              Repeater {
+                model: root.containers
+
+                ContainerTile {
+                  required property var modelData
+                  width: (containerFlow.width - Style.space(8) * (containerFlow.columns - 1)) / containerFlow.columns
+                  container: modelData
+                }
+              }
+            }
+          }
+
+          Column {
+            width: parent.width
+            spacing: Style.space(8)
+            visible: !root.pickerOpen && root.activeDevice && (!root.activeDevice.online || !root.activeDevice.supportsMetrics)
+
+            PanelSectionHeader {
+              text: "AVAILABLE HOST INFO"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Flow {
+              id: availableInfoFlow
+              width: parent.width
+              spacing: Style.space(8)
+
+              Repeater {
+                model: root.tailnetRows(root.activeDevice)
+
+                MetricTile {
+                  required property var modelData
+                  width: (availableInfoFlow.width - Style.space(16)) / 3
+                  metric: modelData
+                }
+              }
+            }
+          }
+
+          Text {
+            width: parent.width
+            text: snapshot.generatedAt
+              ? `Cached host data · updated ${new Date(snapshot.generatedAt).toLocaleTimeString()}${root.refreshing && root.fetchHost === root.activeHost ? " · refreshing in background…" : ""}`
+              : ""
+            visible: !root.pickerOpen && text !== "" && root.activeDevice && root.activeDevice.supportsMetrics
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
             horizontalAlignment: Text.AlignRight
           }
         }
+
+        Rectangle {
+          id: hostDragGhost
+          visible: root.draggedHost !== ""
+          readonly property point pointer: monitoredFlow.mapToItem(
+            keyCatcher, root.dragPointerX, root.dragPointerY)
+          x: pointer.x - width / 2
+          y: pointer.y - height / 2
+          width: Math.max(root.dragGhostWidth, dragGhostContent.implicitWidth + Style.space(20))
+          height: Math.max(root.dragGhostHeight, dragGhostContent.implicitHeight + Style.space(10))
+          radius: height / 2
+          color: Util.alpha(Color.accent, 0.32)
+          border.width: 2
+          border.color: Color.accent
+          rotation: -2
+          scale: visible ? 1.06 : 0.96
+          z: 200
+
+          Behavior on scale { NumberAnimation { duration: 80 } }
+
+          Row {
+            id: dragGhostContent
+            anchors.centerIn: parent
+            spacing: Style.space(5)
+
+            Rectangle {
+              anchors.verticalCenter: parent.verticalCenter
+              width: Style.space(8)
+              height: width
+              radius: width / 2
+              color: root.stateColor(root.hostIndicatorState(root.draggedHost))
+            }
+
+            Text {
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.draggedHostName
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              font.bold: true
+            }
+          }
+        }
       }
     }
-  }
 
   Process {
     id: statusProcess
@@ -629,119 +1627,351 @@ Panel {
       onStreamFinished: root.processError = String(text || "").trim()
     }
     onExited: function(exitCode) {
+      var completedHost = root.fetchHost
       Qt.callLater(function() {
-        if (exitCode !== 0 && root.fetchHost === root.activeHost)
-          root.lastError = root.processError || `server-status exited ${exitCode}`
+        if (exitCode !== 0 || root.processOutput === "") {
+          root.setHostFetchFailed(completedHost, true)
+          if (completedHost === root.activeHost)
+            root.lastError = root.processError || `server-status exited ${exitCode}`
+        }
+        root.finishStartupHost(completedHost)
         root.fetchHost = ""
-        root.pump()
+        if (!root.startupSweepComplete && root.pendingHosts.length > 0)
+          startupPaceTimer.restart()
+        else
+          root.pump()
       })
     }
   }
 
-  // Focused host refresh while the panel is open.
-  Timer {
-    interval: root.refreshIntervalSec * 1000
-    repeat: true
-    running: root.opened
-    onTriggered: root.refresh()
+  Process {
+    id: workspaceProcess
+    onExited: function(exitCode) {
+      var launch = root.pendingWorkspaceLaunch
+      root.pendingWorkspaceLaunch = []
+      if (!(launch instanceof Array) || launch.length === 0) return
+      if (exitCode === 0) {
+        Quickshell.execDetached(launch)
+      } else {
+        Quickshell.execDetached([
+          "notify-send", "-a", "Tailscale Host Monitor", "-u", "critical",
+          "Could not open a new workspace", "Hyprland workspace switch failed"
+        ])
+      }
+    }
   }
 
-  // Slow background sweep across every host to keep the bar dot, chips, and
-  // notifications alive without constant SSH traffic while closed.
+  Process {
+    id: snapshotCachePermissionsProcess
+    command: ["/usr/bin/chmod", "600", root.snapshotCachePath]
+  }
+
+  FileView {
+    id: selectionFile
+    path: root.selectionPath
+    watchChanges: true
+    atomicWrites: true
+    printErrors: false
+    onLoaded: root.loadSelection(text())
+    onLoadFailed: root.loadSelection("")
+    onFileChanged: reload()
+  }
+
+  FileView {
+    id: snapshotCacheFile
+    path: root.snapshotCachePath
+    atomicWrites: true
+    printErrors: false
+    onLoaded: root.loadSnapshotCache(text())
+    onLoadFailed: root.loadSnapshotCache("")
+  }
+
+  Process {
+    id: tailnetProcess
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root.tailnetOutput = String(text || "")
+        if (root.tailnetOutput !== "") root.storeTailnet(root.tailnetOutput)
+      }
+    }
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.tailnetProcessError = String(text || "").trim()
+    }
+    onExited: function(exitCode) {
+      root.tailnetRefreshing = false
+      if (exitCode !== 0)
+        root.tailnetError = root.tailnetProcessError || `tailscale discovery exited ${exitCode}`
+      if (!root.tailnetInitialScanComplete) {
+        root.tailnetInitialScanComplete = true
+        root.maybeStartStartupSweep()
+      }
+    }
+  }
+
+  // Only the selected host receives frequent SSH telemetry while the panel is
+  // open. Tailnet discovery and all-host sweeps run on independent cadences.
   Timer {
-    interval: Math.max(300, root.refreshIntervalSec * 10) * 1000
+    interval: root.hostScanIntervalSec * 1000
+    repeat: true
+    running: root.opened
+    onTriggered: root.refreshSelectedHost(true)
+  }
+
+  Timer {
+    interval: root.tailnetScanIntervalSec * 1000
     repeat: true
     running: true
     triggeredOnStart: true
-    onTriggered: root.refreshAll()
+    onTriggered: root.refreshTailnet()
   }
 
-  component MetricRow: Item {
-    id: metricRow
+  Timer {
+    interval: root.allHostsScanIntervalSec * 1000
+    repeat: true
+    running: true
+    onTriggered: root.refreshAllHosts()
+  }
 
-    required property var metric
-    implicitHeight: metricContent.implicitHeight + Style.spacing.rowPaddingX
+  Timer {
+    id: copyReset
+    interval: 1600
+    onTriggered: root.copiedValue = ""
+  }
 
-    RowLayout {
-      id: metricContent
+  Timer {
+    id: snapshotCacheWriteTimer
+    interval: 500
+    onTriggered: root.writeSnapshotCache()
+  }
+
+  Timer {
+    id: snapshotCachePermissionsTimer
+    interval: 1000
+    onTriggered: if (!snapshotCachePermissionsProcess.running)
+      snapshotCachePermissionsProcess.running = true
+  }
+
+  Timer {
+    id: startupPaceTimer
+    interval: 2000
+    onTriggered: {
+      stop()
+      root.pump()
+    }
+  }
+
+  component InfoField: Item {
+    required property string label
+    required property string value
+    property color valueColor: root.foreground
+    property bool clickable: false
+    signal activated()
+    implicitHeight: infoFieldContent.implicitHeight
+
+    Column {
+      id: infoFieldContent
       anchors.left: parent.left
       anchors.right: parent.right
-      anchors.verticalCenter: parent.verticalCenter
-      anchors.leftMargin: Style.space(8)
-      anchors.rightMargin: Style.space(8)
-      spacing: Style.space(10)
+      spacing: Style.space(4)
 
-      Rectangle {
-        Layout.preferredWidth: Style.space(20)
-        Layout.preferredHeight: Style.space(20)
-        radius: width / 2
-        color: Util.alpha(root.stateColor(metricRow.metric.state), 0.18)
+      Text {
+        width: parent.width
+        text: label
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        font.bold: true
+        elide: Text.ElideRight
+      }
+
+      Text {
+        width: parent.width
+        text: value
+        color: valueColor
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+        font.bold: true
+        elide: Text.ElideRight
+      }
+    }
+
+    MouseArea {
+      anchors.fill: parent
+      enabled: parent.clickable
+      cursorShape: Qt.PointingHandCursor
+      onClicked: parent.activated()
+    }
+  }
+
+  component MetricTile: Rectangle {
+    id: metricTile
+    required property var metric
+    property string hostAlias: root.activeHost
+    property bool allowMute: false
+    readonly property bool muted: allowMute && root.isWarningMuted(hostAlias, String(metric.id || ""))
+    readonly property bool canToggleMute: allowMute && (muted || metric.state === "warn" || metric.state === "fail")
+    // Muting changes alert policy only. The card keeps rendering the actual
+    // state, value, detail, and capacity color so no host information is lost.
+    readonly property string displayState: String(metric.state || "unknown")
+    implicitHeight: Style.space(64)
+    radius: Style.cornerRadius
+    color: Util.alpha(root.foreground, 0.045)
+    border.width: canToggleMute ? 1 : 0
+    border.color: Util.alpha(root.stateColor(displayState), 0.55)
+
+    Column {
+      anchors.fill: parent
+      anchors.margins: Style.space(8)
+      spacing: Style.space(4)
+
+      Row {
+        width: parent.width
+        spacing: Style.space(7)
+
+        Rectangle {
+          anchors.verticalCenter: parent.verticalCenter
+          width: Style.space(9)
+          height: width
+          radius: width / 2
+          color: root.stateColor(metricTile.displayState)
+        }
 
         Text {
-          anchors.centerIn: parent
-          text: root.stateGlyph(metricRow.metric.state)
-          color: root.stateColor(metricRow.metric.state)
+          width: parent.width - metricPercent.implicitWidth - muteAction.implicitWidth - Style.space(25)
+          text: root.displayMetricLabel(metricTile.metric)
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          font.bold: true
+          elide: Text.ElideRight
+        }
+
+        Text {
+          id: metricPercent
+          visible: metricTile.metric.value > 0
+          text: Math.round(metricTile.metric.value * 100) + "%"
+          color: root.stateColor(metricTile.displayState)
           font.family: root.fontFamily
           font.pixelSize: Style.font.bodySmall
           font.bold: true
         }
+
+        Text {
+          id: muteAction
+          visible: metricTile.canToggleMute
+          text: metricTile.muted ? "MUTED" : "MUTE"
+          color: metricTile.muted ? root.dim : root.stateColor(metricTile.metric.state)
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+        }
+      }
+
+      Text {
+        width: parent.width
+        text: root.displayMetricDetail(metricTile.metric)
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        elide: Text.ElideRight
+      }
+
+      Rectangle {
+        width: parent.width
+        visible: metricTile.metric.value > 0
+        height: Style.space(3)
+        radius: height / 2
+        color: Util.alpha(root.foreground, 0.08)
+
+        Rectangle {
+          anchors.left: parent.left
+          anchors.top: parent.top
+          anchors.bottom: parent.bottom
+          width: parent.width * Math.min(1, metricTile.metric.value)
+          radius: parent.radius
+          color: root.stateColor(metricTile.displayState)
+        }
+      }
+    }
+
+    MouseArea {
+      anchors.fill: parent
+      enabled: metricTile.canToggleMute
+      cursorShape: Qt.PointingHandCursor
+      onClicked: root.toggleWarningMute(metricTile.hostAlias, String(metricTile.metric.id || ""))
+    }
+  }
+
+  component ContainerTile: Rectangle {
+    id: containerTile
+    required property var container
+    readonly property string healthState: root.containerState(container)
+    readonly property string warningId: root.containerWarningId(container)
+    readonly property bool muted: root.isWarningMuted(root.activeHost, warningId)
+    readonly property bool canToggleMute: muted || healthState === "warn" || healthState === "fail"
+    // Keep the real container health visible; muted means alerts/host rollup
+    // are disabled, not that the underlying state changed.
+    readonly property string displayState: healthState
+    implicitHeight: Style.space(50)
+    radius: Style.cornerRadius
+    color: Util.alpha(root.foreground, 0.045)
+    border.width: canToggleMute ? 1 : 0
+    border.color: Util.alpha(root.stateColor(displayState), 0.55)
+
+    RowLayout {
+      anchors.fill: parent
+      anchors.margins: Style.space(8)
+      spacing: Style.space(7)
+
+      Rectangle {
+        Layout.preferredWidth: Style.space(10)
+        Layout.preferredHeight: Style.space(10)
+        radius: width / 2
+        color: root.stateColor(containerTile.displayState)
       }
 
       ColumnLayout {
         Layout.fillWidth: true
         spacing: Style.space(3)
 
-        RowLayout {
+        Text {
           Layout.fillWidth: true
-          spacing: Style.space(8)
-
-          Text {
-            Layout.fillWidth: true
-            text: String(metricRow.metric.label || "")
-            color: root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.body
-            font.bold: true
-            elide: Text.ElideRight
-          }
-
-          Text {
-            visible: metricRow.metric.value > 0
-            text: Math.round(metricRow.metric.value * 100) + "%"
-            color: root.stateColor(metricRow.metric.state)
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.bodySmall
-            font.bold: true
-          }
-        }
-
-        Rectangle {
-          Layout.fillWidth: true
-          visible: metricRow.metric.value > 0
-          height: Style.space(4)
-          radius: height / 2
-          color: Util.alpha(root.foreground, 0.08)
-
-          Rectangle {
-            anchors.left: parent.left
-            anchors.top: parent.top
-            anchors.bottom: parent.bottom
-            width: parent.width * Math.min(1, metricRow.metric.value)
-            radius: parent.radius
-            color: root.stateColor(metricRow.metric.state)
-          }
+          text: root.displayContainerName(containerTile.container)
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          font.bold: true
+          elide: Text.ElideRight
         }
 
         Text {
           Layout.fillWidth: true
-          text: String(metricRow.metric.detail || "")
-          visible: text !== ""
+          text: root.containerDetail(containerTile.container)
           color: root.dim
           font.family: root.fontFamily
-          font.pixelSize: Style.font.bodySmall
+          font.pixelSize: Style.font.caption
           elide: Text.ElideRight
         }
       }
+
+      Text {
+        visible: containerTile.canToggleMute || containerTile.container.memPercent !== null
+        text: containerTile.muted ? "MUTED" : (containerTile.canToggleMute ? "MUTE" : Math.round(containerTile.container.memPercent) + "%")
+        color: root.stateColor(containerTile.displayState)
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        font.bold: true
+      }
+    }
+
+    MouseArea {
+      anchors.fill: parent
+      enabled: containerTile.canToggleMute
+      cursorShape: Qt.PointingHandCursor
+      onClicked: root.toggleWarningMute(root.activeHost, containerTile.warningId)
     }
   }
+
 }

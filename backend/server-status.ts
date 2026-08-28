@@ -1,12 +1,14 @@
 #!/usr/bin/env bun
 
 import { collectSnapshot } from "./collect";
+import { collectTailnetSnapshot } from "./tailnet";
 
 function usage(): string {
-  return `Usage: server-status status --host <ssh-host> [--compact]
+  return `Usage: server-status <status|tailnet> [--host <ssh-host>] [--compact]
 
 Collect host and Docker metrics from a remote server over one read-only
-SSH round trip. Nothing is installed or written on the server.`;
+SSH round trip, or discover every node from the local Tailscale network.
+Nothing is installed or written on any node.`;
 }
 
 async function main(): Promise<void> {
@@ -17,7 +19,7 @@ async function main(): Promise<void> {
 
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
-    if (argument === "status") command = "status";
+    if (argument === "status" || argument === "tailnet") command = argument;
     else if (argument === "help" || argument === "--help" || argument === "-h") command = "help";
     else if (argument === "--compact") compact = true;
     else if (argument === "--host") {
@@ -39,6 +41,11 @@ async function main(): Promise<void> {
 
   if (command === "help") {
     console.log(usage());
+    return;
+  }
+  if (command === "tailnet") {
+    const snapshot = await collectTailnetSnapshot();
+    console.log(JSON.stringify(snapshot, null, compact ? 0 : 2));
     return;
   }
   if (sshHost === "") {

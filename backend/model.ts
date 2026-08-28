@@ -51,3 +51,28 @@ export interface ServerSnapshot {
   containers: ContainerMetrics[];
   error: string;
 }
+
+export interface TailnetDevice {
+  id: string;
+  name: string;
+  hostName: string;
+  dnsName: string;
+  os: string;
+  kind: string;
+  online: boolean;
+  ips: string[];
+  tags: string[];
+  lastSeen: string;
+  active: boolean;
+  self: boolean;
+  sshHost: string;
+  supportsMetrics: boolean;
+}
+
+export interface TailnetSnapshot {
+  schemaVersion: 1;
+  generatedAt: string;
+  backendState: string;
+  devices: TailnetDevice[];
+  error: string;
+}

@@ -139,8 +139,14 @@ export function parseHost(sections: Map<string, string[]>): HostMetrics | null {
       availBytes: Number(parts[3]) || 0,
     }))
     // Drop pseudo filesystems (e.g. Tencent Lighthouse COS mounts report
-    // hundreds of TB); anything above 50 TiB is not a local disk here.
-    .filter((disk) => disk.totalBytes > 0 && disk.totalBytes < 50 * 1024 ** 4);
+    // hundreds of TB, and efivarfs looks full despite not being storage users
+    // can act on); anything above 50 TiB is not a local disk here.
+    .filter((disk) =>
+      disk.totalBytes > 0
+      && disk.totalBytes < 50 * 1024 ** 4
+      && !disk.mount.startsWith("/sys/")
+      && !disk.mount.startsWith("/proc/")
+      && !disk.mount.startsWith("/dev/"));
 
   let netRx = 0;
   let netTx = 0;

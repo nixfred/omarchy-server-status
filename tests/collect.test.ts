@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { parseContainers, parseHost, parseSize, splitSections } from "../backend/collect";
+import { deviceKind, parseTailnetStatus } from "../backend/tailnet";
 
 const SAMPLE = `@@HOST@@
 demo-app-01
@@ -11,6 +12,7 @@ Mem:      7789748224  2670592000   245760000    41943040  4873356224  5119148032
 Swap:     2147479552   536870912  1610608640
 @@DISK@@
 /               126692061184  21474836480 100086840320
+/sys/firmware/efi/efivars 262144 212992 49152
 /lhcos-data  281474976710656            0 281474976710656
 @@NET@@
     lo: 8000000    100    0    0    0     0          0         0  8000000    100    0    0    0     0       0          0
@@ -95,5 +97,43 @@ describe("parseSize", () => {
     expect(parseSize("512MiB")).toBe(512 * 1024 ** 2);
     expect(parseSize("1.5GB")).toBe(1_500_000_000);
     expect(parseSize("bogus")).toBe(null);
+  });
+});
+
+describe("parseTailnetStatus", () => {
+  const snapshot = parseTailnetStatus(JSON.stringify({
+    BackendState: "Running",
+    Self: {
+      ID: "self-1", HostName: "server-one", DNSName: "server-one.example.ts.net.", OS: "linux",
+      Online: true, TailscaleIPs: ["100.64.0.1"], Tags: ["tag:server"],
+    },
+    Peer: {
+      ios: {
+        ID: "ios-1", HostName: "localhost", DNSName: "iphone.example.ts.net.", OS: "iOS",
+        Online: false, LastSeen: "2026-08-20T12:00:00Z", TailscaleIPs: ["100.64.0.2"],
+      },
+      mac: {
+        ID: "mac-1", HostName: "laptop-one", DNSName: "laptop-one.example.ts.net.", OS: "macOS",
+        Online: true, TailscaleIPs: ["100.64.0.3"],
+      },
+    },
+  }));
+
+  test("keeps self and offline peers clickable in the discovery model", () => {
+    expect(snapshot.devices.map((device) => device.id)).toEqual(["self-1", "ios-1", "mac-1"]);
+    expect(snapshot.devices.find((device) => device.id === "ios-1")?.online).toBe(false);
+  });
+
+  test("uses MagicDNS for generic mobile hostnames", () => {
+    const iphone = snapshot.devices.find((device) => device.id === "ios-1");
+    expect(iphone?.name).toBe("iphone");
+    expect(iphone?.sshHost).toBe("iphone.example.ts.net");
+    expect(iphone?.supportsMetrics).toBe(false);
+  });
+
+  test("classifies host types and Linux metric support", () => {
+    expect(snapshot.devices[0].kind).toBe("Linux server");
+    expect(snapshot.devices[0].supportsMetrics).toBe(true);
+    expect(deviceKind("android", [])).toBe("Android device");
   });
 });

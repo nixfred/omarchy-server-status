@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
   "id": "ryuhzk.server-status",
-  "name": "Server Status",
-  "version": "0.1.0",
+  "name": "Tailscale Host Monitor",
+  "version": "0.5.0",
   "author": "ryuhzk",
   "license": "MIT",
-  "description": "Agentless server and Docker monitoring over read-only SSH. Nothing is installed on the servers.",
+  "description": "Select nodes from your Tailscale network, track every device type, and collect deep Linux metrics over read-only SSH.",
   "kinds": [
     "bar-widget"
   ],
@@ -13,40 +13,84 @@
     "barWidget": "Panel.qml"
   },
   "barWidget": {
-    "displayName": "Server Status",
-    "description": "Host load, memory, disk, network, and per-container Docker metrics collected over SSH.",
+    "displayName": "Tailscale Host Monitor",
+    "description": "Choose tailnet nodes to monitor; track Tailscale presence on every device type and deep metrics on Linux hosts.",
     "category": "Development",
     "allowMultiple": false,
     "defaultSection": "center",
     "defaults": {
       "sshHosts": "",
       "refreshIntervalSec": 30,
+      "hostScanPreset": "30 seconds",
+      "customHostScanSec": 30,
+      "tailnetScanPreset": "5 minutes",
+      "customTailnetScanSec": 300,
+      "allHostsScanPreset": "5 minutes",
+      "customAllHostsScanSec": 300,
       "panelWidth": 1000,
-      "muteHosts": ""
+      "privacyMode": false
     },
     "schema": [
       {
         "key": "sshHosts",
         "type": "string",
-        "label": "SSH hosts",
+        "label": "Initial SSH hosts (legacy)",
         "defaultValue": "",
-        "description": "Colon-separated ssh host aliases from ~/.ssh/config to monitor, e.g. web-1:db-1:home-nas."
+        "description": "Used only to seed the monitored-node selection. Add and remove nodes from the Tailscale picker in the panel."
       },
       {
-        "key": "muteHosts",
-        "type": "string",
-        "label": "Muted hosts (no notifications)",
-        "defaultValue": "",
-        "description": "Colon-separated subset of sshHosts that never fires desktop notifications."
+        "key": "hostScanPreset",
+        "type": "enum",
+        "label": "Selected host scan",
+        "options": ["15 seconds", "30 seconds", "1 minute", "5 minutes", "Custom"],
+        "defaultValue": "30 seconds",
+        "description": "SSH telemetry cadence for the selected host while the panel is open."
       },
       {
-        "key": "refreshIntervalSec",
+        "key": "customHostScanSec",
         "type": "integer",
-        "label": "Refresh interval while open (seconds)",
+        "label": "Custom selected-host seconds",
         "min": 10,
         "max": 3600,
         "step": 5,
-        "defaultValue": 30
+        "defaultValue": 30,
+        "description": "Used only when Selected host scan is Custom."
+      },
+      {
+        "key": "tailnetScanPreset",
+        "type": "enum",
+        "label": "Tailscale discovery scan",
+        "options": ["30 seconds", "1 minute", "5 minutes", "15 minutes", "Custom"],
+        "defaultValue": "5 minutes",
+        "description": "How often to read device presence from the local Tailscale daemon. This does not SSH into nodes."
+      },
+      {
+        "key": "customTailnetScanSec",
+        "type": "integer",
+        "label": "Custom Tailscale seconds",
+        "min": 30,
+        "max": 3600,
+        "step": 30,
+        "defaultValue": 300,
+        "description": "Used only when Tailscale discovery scan is Custom."
+      },
+      {
+        "key": "allHostsScanPreset",
+        "type": "enum",
+        "label": "All monitored hosts scan",
+        "options": ["5 minutes", "15 minutes", "30 minutes", "1 hour", "Custom"],
+        "defaultValue": "5 minutes",
+        "description": "Background SSH sweep for status dots and notifications across selected Linux hosts."
+      },
+      {
+        "key": "customAllHostsScanSec",
+        "type": "integer",
+        "label": "Custom all-host seconds",
+        "min": 60,
+        "max": 86400,
+        "step": 60,
+        "defaultValue": 300,
+        "description": "Used only when All monitored hosts scan is Custom."
       },
       {
         "key": "panelWidth",
@@ -57,6 +101,13 @@
         "step": 10,
         "defaultValue": 1000,
         "description": "Width of the popup panel in layout units."
+      },
+      {
+        "key": "privacyMode",
+        "type": "boolean",
+        "label": "Privacy-safe display",
+        "defaultValue": false,
+        "description": "Mask hostnames, Tailscale addresses, DNS names, container names, and remote error details for screenshots or screen sharing."
       }
     ]
   }
