@@ -227,7 +227,10 @@ Panel {
     }
     selectionReady = true
     maybeStartStartupSweep()
-    if (opened) Qt.callLater(refreshSelectedHost)
+    if (opened) Qt.callLater(function() {
+      if (typeof root === "undefined" || !root || typeof root.refreshSelectedHost !== "function") return
+      root.refreshSelectedHost()
+    })
   }
 
   function loadSnapshotCache(raw) {
@@ -465,9 +468,10 @@ Panel {
     return detail
   }
 
-  function displayContainerName(container) {
+  function displayContainerName(container, sourceContainers) {
     if (!privacyMode) return String(container && container.name || "")
-    var index = containers.indexOf(container)
+    var list = sourceContainers instanceof Array ? sourceContainers : containers
+    var index = list.indexOf(container)
     return "Container " + String(Math.max(0, index) + 1).padStart(2, "0")
   }
 
@@ -892,7 +896,9 @@ Panel {
     } else {
       return
     }
-    var body = describeProblems(next, hostAlias) || String(next.error || "All metrics back within thresholds")
+    var body = describeProblems(next, hostAlias)
+      || displayError(next.error)
+      || "All metrics back within thresholds"
     var key = hostAlias + "|" + nextSummary + "|" + body
     if (notifiedKeyByHost[hostAlias] === key) return
     var keys = Object.assign({}, notifiedKeyByHost)
@@ -928,14 +934,15 @@ Panel {
     for (var index = 0; index < rows.length; index += 1) {
       if (isWarningMuted(hostAlias, rows[index].id)) continue
       if (rows[index].state === "fail" || rows[index].state === "warn")
-        problems.push(rows[index].label + " " + Math.round(rows[index].value * 100) + "%")
+        problems.push(displayMetricLabel(rows[index]) + " " + Math.round(rows[index].value * 100) + "%")
     }
     var list = snap.containers instanceof Array ? snap.containers : []
     for (var c = 0; c < list.length; c += 1) {
       if (isWarningMuted(hostAlias, containerWarningId(list[c]))) continue
       var state = containerState(list[c])
       if (state === "fail" || state === "warn")
-        problems.push(list[c].name + ": " + (list[c].health !== "none" ? list[c].health : list[c].state))
+        problems.push(displayContainerName(list[c], list) + ": "
+          + (list[c].health !== "none" ? list[c].health : list[c].state))
     }
     return problems.slice(0, 4).join(", ")
   }
@@ -955,6 +962,7 @@ Panel {
     // Switch first and wait for Hyprland to confirm it. This is reliable for
     // launchers such as uwsm-app that may fork before creating their window.
     Qt.callLater(function() {
+      if (typeof workspaceProcess === "undefined" || !workspaceProcess) return
       workspaceProcess.command = ["hyprctl", "dispatch", "workspace", "empty"]
       workspaceProcess.running = true
     })
@@ -962,12 +970,12 @@ Panel {
 
   function openTerminal() {
     if (activeHost === "" || !activeDevice || !activeDevice.online || !activeDevice.supportsMetrics) return
-    launchInNewWorkspace(["uwsm-app", "--", "xdg-terminal-exec", "--", "ssh", "-t", activeHost])
+    launchInNewWorkspace(["uwsm-app", "--", "xdg-terminal-exec", "--", "ssh", "-t", "--", activeHost])
   }
 
   function openBtop() {
     if (activeHost === "" || !activeDevice || !activeDevice.online || !activeDevice.supportsMetrics) return
-    launchInNewWorkspace(["uwsm-app", "--", "xdg-terminal-exec", "--", "ssh", "-t", activeHost, "btop || htop || top"])
+    launchInNewWorkspace(["uwsm-app", "--", "xdg-terminal-exec", "--", "ssh", "-t", "--", activeHost, "btop || htop || top"])
   }
 
   function openSettings() {
@@ -984,7 +992,10 @@ Panel {
     var current = deviceForTarget(activeHost)
     if (hostList.indexOf(activeHost) < 0 && (!current || !isMonitored(current)))
       activeHost = hostList.length > 0 ? hostList[0] : ""
-    Qt.callLater(refreshTailnetIfStale)
+    Qt.callLater(function() {
+      if (typeof root === "undefined" || !root || typeof root.refreshTailnetIfStale !== "function") return
+      root.refreshTailnetIfStale()
+    })
   }
 
   BarIconButton {
@@ -1020,7 +1031,10 @@ Panel {
       // click. Opening a terminal here can move focus and tear down panel
       // items while Qt is still walking the scene for that event, crashing
       // in QQuickItem::mapToScene(). Let delivery finish before launching.
-      else if (buttonCode === Qt.RightButton) Qt.callLater(function() { root.openTerminal() })
+      else if (buttonCode === Qt.RightButton) Qt.callLater(function() {
+        if (typeof root === "undefined" || !root || typeof root.openTerminal !== "function") return
+        root.openTerminal()
+      })
       else root.toggle()
     }
   }
@@ -1204,7 +1218,10 @@ Panel {
                     }
                     root.selectDevice(parent.modelData)
                     if (mouse.button === Qt.RightButton && parent.modelData.online && parent.modelData.supportsMetrics)
-                      Qt.callLater(root.openTerminal)
+                      Qt.callLater(function() {
+                        if (typeof root === "undefined" || !root || typeof root.openTerminal !== "function") return
+                        root.openTerminal()
+                      })
                   }
                 }
 
@@ -1629,6 +1646,7 @@ Panel {
     onExited: function(exitCode) {
       var completedHost = root.fetchHost
       Qt.callLater(function() {
+        if (typeof root === "undefined" || !root || typeof root.finishStartupHost !== "function") return
         if (exitCode !== 0 || root.processOutput === "") {
           root.setHostFetchFailed(completedHost, true)
           if (completedHost === root.activeHost)

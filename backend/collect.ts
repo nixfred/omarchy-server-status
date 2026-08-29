@@ -42,9 +42,13 @@ fi
 echo "@@END@@"
 `;
 
+export function sshCommandForHost(sshHost: string): string[] {
+  return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "--", sshHost];
+}
+
 export async function runSsh(sshHost: string): Promise<{ stdout: string; error: string }> {
   const process = Bun.spawn(
-    ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", sshHost, REMOTE_SCRIPT],
+    [...sshCommandForHost(sshHost), REMOTE_SCRIPT],
     { stdout: "pipe", stderr: "pipe", env: { ...Bun.env } },
   );
 

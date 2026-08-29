@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { parseContainers, parseHost, parseSize, splitSections } from "../backend/collect";
 import { deviceKind, parseTailnetStatus } from "../backend/tailnet";
 
@@ -30,6 +31,19 @@ docker0: 999999999   500    0    0    0     0          0         0 999999999   5
 {"Name":"/redis-1","Restarts":2,"StartedAt":"2026-08-13T02:00:00Z","Status":"running","OOM":false,"Health":"healthy"}
 @@END@@
 `;
+
+describe("SSH command construction", () => {
+  test("terminates SSH options before the host supplied by discovery or settings", async () => {
+    const collect = await import("../backend/collect");
+    const commandForHost = (collect as Record<string, unknown>).sshCommandForHost;
+    expect(typeof commandForHost).toBe("function");
+    if (typeof commandForHost !== "function") return;
+    expect(commandForHost("-oProxyCommand=touch /tmp/should-not-run")).toEqual([
+      "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "--",
+      "-oProxyCommand=touch /tmp/should-not-run",
+    ]);
+  });
+});
 
 describe("splitSections", () => {
   test("splits marker-delimited sections", () => {
@@ -135,5 +149,48 @@ describe("parseTailnetStatus", () => {
     expect(snapshot.devices[0].kind).toBe("Linux server");
     expect(snapshot.devices[0].supportsMetrics).toBe(true);
     expect(deviceKind("android", [])).toBe("Android device");
+  });
+});
+
+describe("Panel.qml delayed callbacks", () => {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8");
+
+  test("does not defer unbound QML methods across plugin teardown", () => {
+    expect(panel).not.toMatch(/Qt\.callLater\(\s*(?:refreshSelectedHost|refreshTailnetIfStale|root\.openTerminal)\s*\)/);
+  });
+
+  test("terminates SSH options before interactive terminal hosts", () => {
+    const openTerminal = panel.match(/function openTerminal\(\)\s*\{[\s\S]*?\n  \}/)?.[0] || "";
+    const openBtop = panel.match(/function openBtop\(\)\s*\{[\s\S]*?\n  \}/)?.[0] || "";
+    expect(openTerminal).toContain('"ssh", "-t", "--", activeHost');
+    expect(openBtop).toContain('"ssh", "-t", "--", activeHost');
+  });
+
+  test("guards deferred callbacks before invoking root methods", () => {
+    const callbacks = [...panel.matchAll(/Qt\.callLater\(function\(\)\s*\{([\s\S]*?)\}\)/g)];
+    expect(callbacks.length).toBeGreaterThan(0);
+    for (const callback of callbacks) {
+      if (/\broot\.[A-Za-z_$][\w$]*\s*\(/.test(callback[1])) {
+        expect(callback[1]).toMatch(/if \(typeof root === "undefined" \|\| !root \|\| typeof root\.[A-Za-z_$][\w$]* !== "function"\) return/);
+      }
+    }
+  });
+
+  test("masks container names in privacy-mode notification bodies", () => {
+    const describeProblems = panel.match(/function describeProblems\([\s\S]*?\n  \}/)?.[0] || "";
+    expect(describeProblems).not.toContain("problems.push(list[c].name");
+    expect(describeProblems).toContain("displayContainerName(list[c], list)");
+  });
+
+  test("masks collector errors in privacy-mode notification bodies", () => {
+    const maybeNotify = panel.match(/function maybeNotify\([\s\S]*?\n  \}/)?.[0] || "";
+    expect(maybeNotify).not.toContain("String(next.error");
+    expect(maybeNotify).toContain("displayError(next.error)");
+  });
+
+  test("masks metric labels in privacy-mode notification bodies", () => {
+    const describeProblems = panel.match(/function describeProblems\([\s\S]*?\n  \}/)?.[0] || "";
+    expect(describeProblems).not.toContain("problems.push(rows[index].label");
+    expect(describeProblems).toContain("displayMetricLabel(rows[index])");
   });
 });
