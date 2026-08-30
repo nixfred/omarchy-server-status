@@ -34,6 +34,10 @@ Panel {
   property var selectedHosts: []
   property var mutedWarningsByHost: ({})
   property var mutedHostAlerts: []
+  // QML cannot reliably observe reads nested inside plain JS maps. Bump this
+  // whenever alert policy changes so bar/host-state bindings repaint now,
+  // rather than waiting for the next telemetry snapshot.
+  property int alertPolicyRevision: 0
   property var hostFetchFailedByHost: ({})
   property string copiedValue: ""
   property string draggedHost: ""
@@ -44,7 +48,6 @@ Panel {
   property real dragPointerY: 0
   property real dragGhostWidth: 0
   property real dragGhostHeight: 0
-  property var pendingWorkspaceLaunch: []
   property bool snapshotCacheReady: false
   property bool startupSelectionCaptured: false
   property var startupSelectedHosts: []
@@ -93,6 +96,7 @@ Panel {
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property string barState: {
+    var observedAlertPolicyRevision = alertPolicyRevision
     if (!startupSweepComplete) return "pass"
     var state = worstState()
     if (state === "fail") return "fail"
@@ -212,6 +216,7 @@ Panel {
             return host !== "" && all.indexOf(host) === index
           })
         : []
+      alertPolicyRevision += 1
       var savedActive = String(parsed.activeHost || "")
       activeHost = loadedHosts.indexOf(savedActive) >= 0
         ? savedActive
@@ -219,6 +224,7 @@ Panel {
     } catch (error) {
       selectedHosts = legacyHostList.slice()
       mutedHostAlerts = []
+      alertPolicyRevision += 1
       if (!startupSelectionCaptured) {
         startupSelectedHosts = selectedHosts.slice()
         startupSelectionCaptured = true
@@ -382,6 +388,7 @@ Panel {
     if (index >= 0) next.splice(index, 1)
     else next.push(host)
     mutedHostAlerts = next
+    alertPolicyRevision += 1
     writeSelection()
   }
 
@@ -406,6 +413,7 @@ Panel {
     if (nextIds.length > 0) nextMap[host] = nextIds
     else delete nextMap[host]
     mutedWarningsByHost = nextMap
+    alertPolicyRevision += 1
     writeSelection()
   }
 
@@ -710,6 +718,7 @@ Panel {
   }
 
   function hostIndicatorState(hostAlias) {
+    var observedAlertPolicyRevision = alertPolicyRevision
     return startupSweepComplete ? summaryFor(hostAlias) : "pass"
   }
 
@@ -955,31 +964,36 @@ Panel {
     return isFinite(elapsed) && elapsed > 0 ? elapsed : 0
   }
 
-  function launchInNewWorkspace(args) {
-    if (!(args instanceof Array) || args.length === 0 || workspaceProcess.running) return
-    pendingWorkspaceLaunch = args.slice()
+  function terminalCommand(hostAlias, command) {
+    var host = String(hostAlias || "").trim()
+    if (host === "") return []
+    var remoteCommand = command instanceof Array ? command : []
+    return [
+      "uwsm-app", "--", "xdg-terminal-exec", "--title=SSH · " + host,
+      "--", "ssh", "-t", "--", host
+    ].concat(remoteCommand)
+  }
+
+  function openTerminalFor(hostAlias, device) {
+    var host = String(hostAlias || "").trim()
+    if (host === "" || !device || !device.online) return
     root.close()
-    // Switch first and wait for Hyprland to confirm it. This is reliable for
-    // launchers such as uwsm-app that may fork before creating their window.
-    Qt.callLater(function() {
-      if (typeof workspaceProcess === "undefined" || !workspaceProcess) return
-      workspaceProcess.command = ["hyprctl", "dispatch", "workspace", "empty"]
-      workspaceProcess.running = true
-    })
+    Quickshell.execDetached(terminalCommand(host, []))
   }
 
   function openTerminal() {
-    if (activeHost === "" || !activeDevice || !activeDevice.online || !activeDevice.supportsMetrics) return
-    launchInNewWorkspace(["uwsm-app", "--", "xdg-terminal-exec", "--", "ssh", "-t", "--", activeHost])
+    openTerminalFor(activeHost, activeDevice)
   }
 
   function openBtop() {
     if (activeHost === "" || !activeDevice || !activeDevice.online || !activeDevice.supportsMetrics) return
-    launchInNewWorkspace(["uwsm-app", "--", "xdg-terminal-exec", "--", "ssh", "-t", "--", activeHost, "btop || htop || top"])
+    root.close()
+    Quickshell.execDetached(terminalCommand(activeHost, ["btop || htop || top"]))
   }
 
   function openSettings() {
-    launchInNewWorkspace(["omarchy-launch-editor", selectionPath])
+    root.close()
+    Quickshell.execDetached(["omarchy-launch-editor", selectionPath])
   }
 
   onOpenedChanged: if (opened) {
@@ -1107,6 +1121,13 @@ Panel {
             width: parent.width
             spacing: Style.space(6)
 
+            PanelSectionHeader {
+              width: monitoredFlow.width
+              text: "MACHINES · CLICK TO SSH · RIGHT-CLICK TO INSPECT"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
             Repeater {
               id: monitoredRepeater
               model: root.monitoredDevices
@@ -1147,6 +1168,14 @@ Panel {
                     anchors.verticalCenter: parent.verticalCenter
                     text: root.displayHostName(target, modelData.name, modelData)
                     color: root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                  }
+
+                  Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "󰆍"
+                    color: modelData.online ? Color.accent : root.dim
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.bodySmall
                   }
@@ -1216,12 +1245,10 @@ Panel {
                       mouse.accepted = true
                       return
                     }
-                    root.selectDevice(parent.modelData)
-                    if (mouse.button === Qt.RightButton && parent.modelData.online && parent.modelData.supportsMetrics)
-                      Qt.callLater(function() {
-                        if (typeof root === "undefined" || !root || typeof root.openTerminal !== "function") return
-                        root.openTerminal()
-                      })
+                    if (mouse.button === Qt.LeftButton)
+                      root.openTerminalFor(parent.target, parent.modelData)
+                    else
+                      root.selectDevice(parent.modelData)
                   }
                 }
 
@@ -1368,7 +1395,7 @@ Panel {
                 iconText: "󰆍"
                 tooltipText: "SSH terminal (T)"
                 foreground: root.foreground
-                enabled: root.activeDevice && root.activeDevice.online && root.activeDevice.supportsMetrics
+                enabled: root.activeDevice && root.activeDevice.online
                 onClicked: root.openTerminal()
               }
 
@@ -1659,23 +1686,6 @@ Panel {
         else
           root.pump()
       })
-    }
-  }
-
-  Process {
-    id: workspaceProcess
-    onExited: function(exitCode) {
-      var launch = root.pendingWorkspaceLaunch
-      root.pendingWorkspaceLaunch = []
-      if (!(launch instanceof Array) || launch.length === 0) return
-      if (exitCode === 0) {
-        Quickshell.execDetached(launch)
-      } else {
-        Quickshell.execDetached([
-          "notify-send", "-a", "Tailscale Host Monitor", "-u", "critical",
-          "Could not open a new workspace", "Hyprland workspace switch failed"
-        ])
-      }
     }
   }
 

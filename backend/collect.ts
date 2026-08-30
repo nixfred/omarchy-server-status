@@ -16,7 +16,7 @@ const SSH_TIMEOUT_MS = 15_000;
  * full inspect JSON would leak container environment variables (secrets)
  * into the snapshot.
  */
-const REMOTE_SCRIPT = `
+export const REMOTE_SCRIPT = `
 set -o pipefail
 echo "@@HOST@@"
 hostname
@@ -26,7 +26,7 @@ cat /proc/uptime
 echo "@@MEM@@"
 free -b | sed -n "2p;3p"
 echo "@@DISK@@"
-df -B1 --output=target,size,used,avail -x tmpfs -x devtmpfs -x overlay -x squashfs 2>/dev/null | tail -n +2
+df -B1 --output=target,size,used,avail -x tmpfs -x devtmpfs -x overlay -x squashfs -x iso9660 2>/dev/null | tail -n +2
 echo "@@NET@@"
 tail -n +3 /proc/net/dev
 if sudo -n docker version >/dev/null 2>&1; then DOCKER="sudo -n docker"; elif docker version >/dev/null 2>&1; then DOCKER="docker"; else DOCKER=""; fi

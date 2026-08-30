@@ -35,7 +35,8 @@ environment variables (secrets) into the snapshot.
 
 - **Host metrics** — CPU load, memory, per-disk usage, network rate, uptime,
   with traffic-light thresholds (memory warns at 75%, red at 85%; disk warns
-  at 70%, red at 80%; load per core warns at 0.7, red at 1.0)
+  at 70%, red at 80%; load per core warns at 0.7, red at 1.0); read-only ISO
+  media is ignored because a full optical image is not actionable capacity
 - **Containers** — compact three-column cards show health, CPU%, memory versus its
   limit, restart count; unhealthy, restarting, or OOM-killed turns red
 - **Multiple servers** — small chips switch between selected hosts; drag them
@@ -46,8 +47,9 @@ environment variables (secrets) into the snapshot.
   containers are arranged around that host instead of the discovery list
 - **Direct actions** — click the selected host's Tailscale IP to copy it;
   warning cards expose a visible MUTE/MUTED toggle stored per host without
-  hiding or recoloring the underlying data; SSH, btop, and settings close the
-  monitor and launch on a newly focused workspace
+  hiding or recoloring the underlying data; click any monitored-machine chip
+  to open SSH directly in the default terminal, right-click it to inspect its
+  dashboard, or drag it to reorder
 - **Whole-host mute** — click **HOST ALERTS** in the focused-host status box to
   suppress that host's notifications and exclude its failures from the bar
   color; its live and cached information remains fully visible
@@ -121,8 +123,9 @@ servers, so there is nothing to clean up remotely.
        IdentitiesOnly yes
    ```
 
-Switch between selected nodes with the chips at the top of the panel, or press
-`1`–`9`. The chosen host is stored with the selection and remains focused across
+Click a selected node's chip to open SSH in the default terminal. Right-click a
+chip, or press `1`–`9`, to inspect that node in the dashboard. The chosen host
+is stored with the selection and remains focused across
 shell/plugin reloads until you choose another one. The bar dot always shows the
 worst state across the selected nodes.
 
@@ -182,7 +185,7 @@ Tailscale presence immediately; `R` also requests every selected Linux host.
 Bar icon: green means every selected host is healthy, yellow means a warning
 or telemetry is still unknown, and red means a critical condition or offline
 node. Middle-click refreshes all hosts. Right-click closes the monitor and
-opens an SSH terminal to the focused host on a new workspace.
+opens an SSH terminal to the focused host on the current workspace.
 
 ## Settings
 

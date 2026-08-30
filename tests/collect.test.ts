@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { parseContainers, parseHost, parseSize, splitSections } from "../backend/collect";
+import { REMOTE_SCRIPT, parseContainers, parseHost, parseSize, splitSections } from "../backend/collect";
 import { deviceKind, parseTailnetStatus } from "../backend/tailnet";
 
 const SAMPLE = `@@HOST@@
@@ -42,6 +42,10 @@ describe("SSH command construction", () => {
       "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "--",
       "-oProxyCommand=touch /tmp/should-not-run",
     ]);
+  });
+
+  test("excludes read-only ISO mounts from disk capacity alerts", () => {
+    expect(REMOTE_SCRIPT).toContain("-x iso9660");
   });
 });
 
@@ -160,10 +164,25 @@ describe("Panel.qml delayed callbacks", () => {
   });
 
   test("terminates SSH options before interactive terminal hosts", () => {
-    const openTerminal = panel.match(/function openTerminal\(\)\s*\{[\s\S]*?\n  \}/)?.[0] || "";
+    const terminalCommand = panel.match(/function terminalCommand\([^)]*\)\s*\{[\s\S]*?\n  \}/)?.[0] || "";
     const openBtop = panel.match(/function openBtop\(\)\s*\{[\s\S]*?\n  \}/)?.[0] || "";
-    expect(openTerminal).toContain('"ssh", "-t", "--", activeHost');
-    expect(openBtop).toContain('"ssh", "-t", "--", activeHost');
+    expect(terminalCommand).toContain('"ssh", "-t", "--", host');
+    expect(openBtop).toContain('terminalCommand(activeHost, ["btop || htop || top"])');
+  });
+
+  test("launches SSH directly and makes machine chips the primary action", () => {
+    const openTerminalFor = panel.match(/function openTerminalFor\([^)]*\)\s*\{[\s\S]*?\n  \}/)?.[0] || "";
+    expect(openTerminalFor).toContain("Quickshell.execDetached(terminalCommand(host, []))");
+    expect(openTerminalFor).not.toContain("launchInNewWorkspace");
+    expect(panel).toContain('text: "MACHINES · CLICK TO SSH · RIGHT-CLICK TO INSPECT"');
+    expect(panel).toContain("root.openTerminalFor(parent.target, parent.modelData)");
+  });
+
+  test("contains no Hyprland workspace-switch launch path", () => {
+    expect(panel).not.toContain("launchInNewWorkspace");
+    expect(panel).not.toContain("workspaceProcess");
+    expect(panel).not.toContain("pendingWorkspaceLaunch");
+    expect(panel).not.toContain("Hyprland workspace switch failed");
   });
 
   test("guards deferred callbacks before invoking root methods", () => {
@@ -192,5 +211,24 @@ describe("Panel.qml delayed callbacks", () => {
     const describeProblems = panel.match(/function describeProblems\([\s\S]*?\n  \}/)?.[0] || "";
     expect(describeProblems).not.toContain("problems.push(rows[index].label");
     expect(describeProblems).toContain("displayMetricLabel(rows[index])");
+  });
+});
+
+describe("Panel.qml alert policy", () => {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8");
+
+  test("forces bar and host indicators to repaint immediately after mute changes", () => {
+    const barState = panel.match(/readonly property string barState:\s*\{[\s\S]*?\n  \}/)?.[0] || "";
+    const toggleWarningMute = panel.match(/function toggleWarningMute\([^)]*\)\s*\{[\s\S]*?\n  \}/)?.[0] || "";
+    const hostIndicatorState = panel.match(/function hostIndicatorState\([^)]*\)\s*\{[\s\S]*?\n  \}/)?.[0] || "";
+    expect(barState).toContain("alertPolicyRevision");
+    expect(toggleWarningMute).toContain("alertPolicyRevision += 1");
+    expect(hostIndicatorState).toContain("alertPolicyRevision");
+  });
+
+  test("excludes muted metrics and containers before choosing the host state", () => {
+    const summary = panel.match(/function summaryFor\([^)]*\)\s*\{[\s\S]*?\n  \}/)?.[0] || "";
+    expect(summary).toMatch(/isWarningMuted\(hostAlias, rows\[index\]\.id\)\) continue[\s\S]*rows\[index\]\.state === "fail"/);
+    expect(summary).toMatch(/isWarningMuted\(hostAlias, containerWarningId\(list\[c\]\)\)\) continue[\s\S]*state === "fail"/);
   });
 });
