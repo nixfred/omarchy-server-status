@@ -1123,7 +1123,7 @@ Panel {
 
             PanelSectionHeader {
               width: monitoredFlow.width
-              text: "MACHINES · CLICK TO SSH · RIGHT-CLICK TO INSPECT"
+              text: "MACHINES · LEFT-CLICK TO INSPECT · RIGHT-CLICK TO SSH"
               foreground: root.foreground
               fontFamily: root.fontFamily
             }
@@ -1246,9 +1246,9 @@ Panel {
                       return
                     }
                     if (mouse.button === Qt.LeftButton)
-                      root.openTerminalFor(parent.target, parent.modelData)
-                    else
                       root.selectDevice(parent.modelData)
+                    else
+                      root.openTerminalFor(parent.target, parent.modelData)
                   }
                 }
 

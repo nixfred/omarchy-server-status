@@ -48,8 +48,8 @@ environment variables (secrets) into the snapshot.
 - **Direct actions** — click the selected host's Tailscale IP to copy it;
   warning cards expose a visible MUTE/MUTED toggle stored per host without
   hiding or recoloring the underlying data; click any monitored-machine chip
-  to open SSH directly in the default terminal, right-click it to inspect its
-  dashboard, or drag it to reorder
+  to inspect its dashboard, right-click it to connect in the default terminal,
+  or drag it to reorder
 - **Whole-host mute** — click **HOST ALERTS** in the focused-host status box to
   suppress that host's notifications and exclude its failures from the bar
   color; its live and cached information remains fully visible
@@ -123,9 +123,9 @@ servers, so there is nothing to clean up remotely.
        IdentitiesOnly yes
    ```
 
-Click a selected node's chip to open SSH in the default terminal. Right-click a
-chip, or press `1`–`9`, to inspect that node in the dashboard. The chosen host
-is stored with the selection and remains focused across
+Click a selected node's chip, or press `1`–`9`, to inspect that node in the
+dashboard. Right-click the chip to open SSH in the default terminal. The chosen
+host is stored with the selection and remains focused across
 shell/plugin reloads until you choose another one. The bar dot always shows the
 worst state across the selected nodes.
 

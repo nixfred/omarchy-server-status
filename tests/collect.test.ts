@@ -170,12 +170,14 @@ describe("Panel.qml delayed callbacks", () => {
     expect(openBtop).toContain('terminalCommand(activeHost, ["btop || htop || top"])');
   });
 
-  test("launches SSH directly and makes machine chips the primary action", () => {
+  test("left-click selects machine chips and right-click opens SSH", () => {
     const openTerminalFor = panel.match(/function openTerminalFor\([^)]*\)\s*\{[\s\S]*?\n  \}/)?.[0] || "";
     expect(openTerminalFor).toContain("Quickshell.execDetached(terminalCommand(host, []))");
     expect(openTerminalFor).not.toContain("launchInNewWorkspace");
-    expect(panel).toContain('text: "MACHINES · CLICK TO SSH · RIGHT-CLICK TO INSPECT"');
+    expect(panel).toContain('text: "MACHINES · LEFT-CLICK TO INSPECT · RIGHT-CLICK TO SSH"');
+    expect(panel).toContain("root.selectDevice(parent.modelData)");
     expect(panel).toContain("root.openTerminalFor(parent.target, parent.modelData)");
+    expect(panel).not.toContain("id: chipSshAction");
   });
 
   test("contains no Hyprland workspace-switch launch path", () => {
