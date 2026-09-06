@@ -276,3 +276,27 @@ describe("bounded collection", () => {
     expect(snapshot.devices.length).toBe(512);
   });
 });
+
+describe("Panel.qml rendering sinks", () => {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8");
+
+  test("pins every Text element to PlainText", () => {
+    const textCount = (panel.match(/\bText\s*\{/g) || []).length;
+    const pinned = (panel.match(/textFormat:\s*Text\.PlainText/g) || []).length;
+    expect(textCount).toBeGreaterThan(0);
+    expect(pinned).toBe(textCount);
+  });
+
+  test("sanitizes remote-derived strings before shell-owned sinks", () => {
+    expect(panel).toContain("function plain(");
+    expect(panel).toMatch(/tooltipText: root\.plain\(`Tailscale Host Monitor/);
+    expect(panel).toMatch(/"notify-send",[^\n]*"--", plain\(title\), plain\(body\)/);
+    expect(panel).toContain('["wl-copy", "--", text]');
+  });
+
+  test("collects backend output through a byte budget, not StdioCollector", () => {
+    expect(panel).not.toContain("StdioCollector");
+    expect((panel.match(/splitMarker: ""/g) || []).length).toBe(4);
+    expect(panel).toContain("maxBackendOutputChars");
+  });
+});

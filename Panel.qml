@@ -71,6 +71,12 @@ Panel {
   readonly property int allHostsScanIntervalSec: cadenceSeconds(allHostsScanPreset, customAllHostsScanSec, 300)
   readonly property int panelWidth: boundedInt(setting("panelWidth", 1000), 320, 1200)
   readonly property bool privacyMode: String(setting("privacyMode", false)).toLowerCase() === "true"
+  // Backend output is byte-capped at the producer (backend/collect.ts and
+  // backend/tailnet.ts); these budgets are defense in depth so no
+  // whole-stream collector remains in the shell process. .length counts
+  // UTF-16 units, which is fine for a backstop.
+  readonly property int maxBackendOutputChars: 2097152
+  readonly property int maxBackendErrorChars: 16384
   readonly property string backendPath: decodeURIComponent(
     String(Qt.resolvedUrl("backend/server-status.ts")).replace(/^file:\/\//, ""))
   readonly property string selectionPath: Quickshell.env("HOME") + "/.config/omarchy/server-status.json"
@@ -1684,18 +1690,29 @@ Panel {
 
   Process {
     id: statusProcess
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        root.processOutput = String(text || "")
-        if (root.processOutput !== "") root.storeSnapshot(root.fetchHost, root.processOutput)
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        root.processOutput += chunk
+        if (root.processOutput.length > root.maxBackendOutputChars) {
+          root.processOutput = ""
+          root.processError = "server-status output exceeded limit"
+          statusProcess.signal(15)
+          statusKillTimer.start()
+        }
       }
     }
-    stderr: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.processError = String(text || "").trim()
+    stderr: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        if (root.processError.length < root.maxBackendErrorChars)
+          root.processError += chunk
+      }
     }
     onExited: function(exitCode) {
+      statusKillTimer.stop()
+      root.processError = root.processError.trim()
+      if (root.processOutput !== "") root.storeSnapshot(root.fetchHost, root.processOutput)
       var completedHost = root.fetchHost
       Qt.callLater(function() {
         if (typeof root === "undefined" || !root || typeof root.finishStartupHost !== "function") return
@@ -1741,18 +1758,29 @@ Panel {
 
   Process {
     id: tailnetProcess
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        root.tailnetOutput = String(text || "")
-        if (root.tailnetOutput !== "") root.storeTailnet(root.tailnetOutput)
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        root.tailnetOutput += chunk
+        if (root.tailnetOutput.length > root.maxBackendOutputChars) {
+          root.tailnetOutput = ""
+          root.tailnetProcessError = "tailscale discovery output exceeded limit"
+          tailnetProcess.signal(15)
+          tailnetKillTimer.start()
+        }
       }
     }
-    stderr: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.tailnetProcessError = String(text || "").trim()
+    stderr: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        if (root.tailnetProcessError.length < root.maxBackendErrorChars)
+          root.tailnetProcessError += chunk
+      }
     }
     onExited: function(exitCode) {
+      tailnetKillTimer.stop()
+      root.tailnetProcessError = root.tailnetProcessError.trim()
+      if (root.tailnetOutput !== "") root.storeTailnet(root.tailnetOutput)
       root.tailnetRefreshing = false
       if (exitCode !== 0)
         root.tailnetError = root.tailnetProcessError || `tailscale discovery exited ${exitCode}`
@@ -1813,6 +1841,18 @@ Panel {
       stop()
       root.pump()
     }
+  }
+
+  Timer {
+    id: statusKillTimer
+    interval: 2000
+    onTriggered: statusProcess.signal(9)
+  }
+
+  Timer {
+    id: tailnetKillTimer
+    interval: 2000
+    onTriggered: tailnetProcess.signal(9)
   }
 
   component InfoField: Item {
