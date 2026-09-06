@@ -6,6 +6,40 @@ import type {
 } from "./model";
 
 const SSH_TIMEOUT_MS = 15_000;
+const MAX_SSH_STDOUT_BYTES = 1_048_576; // 1 MiB
+const MAX_SSH_STDERR_BYTES = 16_384;
+const MAX_CONTAINERS = 256;
+const MAX_DISKS = 64;
+
+/**
+ * Collect a stream under a byte budget. The cap sits at the producer,
+ * before the bytes accumulate in memory; overflow kills the child via
+ * onOverflow and is reported rather than silently truncated.
+ */
+export async function readBounded(
+  stream: ReadableStream<Uint8Array>,
+  maxBytes: number,
+  onOverflow: () => void,
+): Promise<{ text: string; overflow: boolean }> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        onOverflow();
+        return { text: "", overflow: true };
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.cancel().catch(() => {});
+  }
+  return { text: Buffer.concat(chunks).toString("utf8"), overflow: false };
+}
 
 /**
  * One read-only remote script per refresh. Docker calls prefer
@@ -59,20 +93,23 @@ export async function runSsh(sshHost: string): Promise<{ stdout: string; error: 
   }, SSH_TIMEOUT_MS);
 
   const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(process.stdout).text(),
-    new Response(process.stderr).text(),
+    readBounded(process.stdout, MAX_SSH_STDOUT_BYTES, () => process.kill()),
+    readBounded(process.stderr, MAX_SSH_STDERR_BYTES, () => process.kill()),
     process.exited,
   ]);
   clearTimeout(timer);
 
   if (timedOut) return { stdout: "", error: `ssh ${sshHost} timed out` };
-  if (exitCode !== 0 && !stdout.includes("@@HOST@@")) {
+  if (stdout.overflow || stderr.overflow) {
+    return { stdout: "", error: `ssh ${sshHost} output exceeded ${MAX_SSH_STDOUT_BYTES} bytes` };
+  }
+  if (exitCode !== 0 && !stdout.text.includes("@@HOST@@")) {
     return {
       stdout: "",
-      error: stderr.trim().replace(/\s+/g, " ").slice(0, 240) || `ssh exited ${exitCode}`,
+      error: stderr.text.trim().replace(/\s+/g, " ").slice(0, 240) || `ssh exited ${exitCode}`,
     };
   }
-  return { stdout, error: "" };
+  return { stdout: stdout.text, error: "" };
 }
 
 export function splitSections(raw: string): Map<string, string[]> {
@@ -150,7 +187,8 @@ export function parseHost(sections: Map<string, string[]>): HostMetrics | null {
       && disk.totalBytes < 50 * 1024 ** 4
       && !disk.mount.startsWith("/sys/")
       && !disk.mount.startsWith("/proc/")
-      && !disk.mount.startsWith("/dev/"));
+      && !disk.mount.startsWith("/dev/"))
+    .slice(0, MAX_DISKS);
 
   let netRx = 0;
   let netTx = 0;
@@ -218,7 +256,7 @@ export function parseContainers(sections: Map<string, string[]>): ContainerMetri
     inspect.map((row) => [String(row.Name || "").replace(/^\//, ""), row]),
   );
 
-  return ps.map((row) => {
+  return ps.slice(0, MAX_CONTAINERS).map((row) => {
     const name = String(row.Names || "");
     const stat = statsByName.get(name);
     const info = inspectByName.get(name);
