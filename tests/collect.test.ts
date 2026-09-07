@@ -212,6 +212,38 @@ describe("Panel.qml delayed callbacks", () => {
     expect(hostRows).toContain('" · 15m " + info.load15.toFixed(2)');
   });
 
+  test("puts the grouped-volume count in the label, not the elided detail", () => {
+    // The detail row is a single elided Text on a quarter-width tile, so a
+    // suffix appended there is cut off before it can be read. The count has to
+    // ride on the short bold label instead.
+    const hostRows = panel.match(/function hostRows\([^)]*\)\s*\{[\s\S]*?\n  \}/)?.[0] || "";
+    expect(hostRows).toContain('label: "Disk " + disk.mount + (sharedCount > 0 ? " +" + sharedCount : "")');
+    const suffix = panel.match(/function diskShareSuffix\([^)]*\)\s*\{[\s\S]*?\n  \}/)?.[0] || "";
+    expect(suffix).not.toContain("volumes");
+  });
+
+  test("names every grouped mount in the tooltip", () => {
+    const tooltip = panel.match(/function diskTooltip\([^)]*\)\s*\{[\s\S]*?\n  \}/)?.[0] || "";
+    expect(tooltip).toContain("[String(disk.mount)].concat(shared)");
+    expect(tooltip).toContain("volumes on one filesystem");
+    expect(panel).toContain("text: metricTile.tooltipText");
+  });
+
+  test("metric tiles report hover even when they cannot be muted", () => {
+    // The MouseArea used to be disabled unless the tile was mutable, which
+    // meant a healthy grouped disk could never show its tooltip.
+    expect(panel).toContain("hoverEnabled: true");
+    expect(panel).toContain("acceptedButtons: metricTile.canToggleMute ? Qt.LeftButton : Qt.NoButton");
+    expect(panel).not.toContain("enabled: metricTile.canToggleMute");
+  });
+
+  test("privacy mode keeps the volume count but drops the mount paths", () => {
+    const label = panel.match(/function displayMetricLabel\([^)]*\)\s*\{[\s\S]*?\n  \}/)?.[0] || "";
+    expect(label).toContain('"Disk volume" + (grouped ? grouped[0] : "")');
+    const tip = panel.match(/function displayMetricTooltip\([^)]*\)\s*\{[\s\S]*?\n  \}/)?.[0] || "";
+    expect(tip).toContain('text.split("\\n")[0]');
+  });
+
   test("contains no Hyprland workspace-switch launch path", () => {
     expect(panel).not.toContain("launchInNewWorkspace");
     expect(panel).not.toContain("workspaceProcess");

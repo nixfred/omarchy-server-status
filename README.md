@@ -80,8 +80,9 @@ sharing. Toggle it off and these are your real nodes.*
 - **One card per filesystem, not per mount** — btrfs subvolumes and bind mounts
   share a single allocation pool and `df` reports identical figures for each, so
   `/`, `/home`, `/var/log`, and `/.snapshots` on one btrfs partition collapse
-  into a single card marked `btrfs · 4 volumes` instead of raising the same
-  warning four times over. Separate partitions stay separate cards, and the
+  into a single card labelled `Disk / +3`, instead of raising the same warning
+  four times over; hover the card to see every mount in the group. Separate
+  partitions stay separate cards, and the
   fullest member of a group is the one reported, so a subvolume quota cannot
   hide a filesystem that is closer to full than its primary mount
 - **Multiple servers** — small chips switch between selected hosts; drag them

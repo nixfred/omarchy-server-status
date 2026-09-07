@@ -460,8 +460,10 @@ Panel {
 
   function displayMetricLabel(metric) {
     var label = String(metric && metric.label || "")
-    if (privacyMode && String(metric && metric.id || "").indexOf("disk-") === 0)
-      return "Disk volume"
+    if (privacyMode && String(metric && metric.id || "").indexOf("disk-") === 0) {
+      var grouped = label.match(/ \+\d+$/)
+      return "Disk volume" + (grouped ? grouped[0] : "")
+    }
     return label
   }
 
@@ -578,17 +580,40 @@ Panel {
     return "pass"
   }
 
+  function sharedMountsOf(disk) {
+    return disk && disk.sharedMounts instanceof Array ? disk.sharedMounts : []
+  }
+
   // The backend reports one card per filesystem, not per mount point, because
   // btrfs subvolumes and bind mounts share an allocation pool and would
-  // otherwise raise the same warning several times. Say so on the card,
-  // otherwise a host with four subvolumes looks like it lost three of them.
-  // Only the count is shown: the other mount paths stay out of the tile so
-  // privacy mode has nothing extra to mask.
+  // otherwise raise the same warning several times.
+  //
+  // The count goes in the LABEL, not the detail. The detail line is a single
+  // elided row on a quarter-width tile, so anything appended there is cut off
+  // before it can be read — which made a grouped card indistinguishable from a
+  // host that had simply lost three filesystems. The label is short, bold, and
+  // drawn first, so "Disk / +3" survives.
   function diskShareSuffix(disk) {
-    var shared = disk && disk.sharedMounts instanceof Array ? disk.sharedMounts : []
+    var fstype = String(disk && disk.fstype || "")
+    return sharedMountsOf(disk).length > 0 && fstype !== "" ? " · " + fstype : ""
+  }
+
+  // Full membership lives in the hover tooltip, where there is room for it.
+  function diskTooltip(disk) {
+    var shared = sharedMountsOf(disk)
     if (shared.length < 1) return ""
     var fstype = String(disk && disk.fstype || "")
-    return " · " + (fstype !== "" ? fstype + " · " : "") + (shared.length + 1) + " volumes"
+    var mounts = [String(disk.mount)].concat(shared)
+    return (fstype !== "" ? fstype + " · " : "") + mounts.length
+      + " volumes on one filesystem\n" + mounts.join("\n")
+  }
+
+  function displayMetricTooltip(metric) {
+    var text = String(metric && metric.tooltip || "")
+    if (text === "" || !privacyMode) return text
+    // Mount paths name real directories. Keep the summary line, drop the list.
+    return String(metric && metric.id || "").indexOf("disk-") === 0
+      ? text.split("\n")[0] : text
   }
 
   function hostRows(info, previous, elapsedSec) {
@@ -629,12 +654,14 @@ Panel {
     for (var index = 0; index < info.disks.length; index += 1) {
       var disk = info.disks[index]
       var frac = disk.totalBytes > 0 ? disk.usedBytes / disk.totalBytes : 0
+      var sharedCount = sharedMountsOf(disk).length
       rows.push({
         id: "disk-" + disk.mount,
-        label: "Disk " + disk.mount,
+        label: "Disk " + disk.mount + (sharedCount > 0 ? " +" + sharedCount : ""),
         state: levelFor(frac, 0.7, 0.8),
         detail: formatBytes(disk.usedBytes) + " / " + formatBytes(disk.totalBytes) + diskShareSuffix(disk),
-        value: frac
+        value: frac,
+        tooltip: diskTooltip(disk)
       })
     }
     var netDetail = "rx " + formatBytes(info.netRxBytes) + " · tx " + formatBytes(info.netTxBytes) + " total"
@@ -1870,6 +1897,7 @@ Panel {
     // Muting changes alert policy only. The card keeps rendering the actual
     // state, value, detail, and capacity color so no host information is lost.
     readonly property string displayState: String(metric.state || "unknown")
+    readonly property string tooltipText: root.displayMetricTooltip(metric)
     implicitHeight: Style.space(64)
     radius: Style.cornerRadius
     color: Util.alpha(root.foreground, 0.045)
@@ -1952,10 +1980,17 @@ Panel {
     }
 
     MouseArea {
+      id: metricHover
       anchors.fill: parent
-      enabled: metricTile.canToggleMute
-      cursorShape: Qt.PointingHandCursor
+      hoverEnabled: true
+      acceptedButtons: metricTile.canToggleMute ? Qt.LeftButton : Qt.NoButton
+      cursorShape: metricTile.canToggleMute ? Qt.PointingHandCursor : Qt.ArrowCursor
       onClicked: root.toggleWarningMute(metricTile.hostAlias, String(metricTile.metric.id || ""))
+
+      PanelToolTip {
+        visible: metricHover.containsMouse && metricTile.tooltipText !== ""
+        text: metricTile.tooltipText
+      }
     }
   }
 
