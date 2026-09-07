@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { REMOTE_SCRIPT, parseContainers, parseHost, parseSize, splitSections } from "../backend/collect";
+import {
+  REMOTE_SCRIPT,
+  groupDisksBySource,
+  parseContainers,
+  parseDiskRows,
+  parseHost,
+  parseSize,
+  splitSections,
+} from "../backend/collect";
 import { deviceKind, parseTailnetStatus } from "../backend/tailnet";
 
 const SAMPLE = `@@HOST@@
@@ -12,9 +20,9 @@ demo-app-01
 Mem:      7789748224  2670592000   245760000    41943040  4873356224  5119148032
 Swap:     2147479552   536870912  1610608640
 @@DISK@@
-/               126692061184  21474836480 100086840320
-/sys/firmware/efi/efivars 262144 212992 49152
-/lhcos-data  281474976710656            0 281474976710656
+/dev/vda1 ext4 /               126692061184  21474836480 100086840320
+efivarfs efivarfs /sys/firmware/efi/efivars 262144 212992 49152
+/dev/vdb1 ext4 /lhcos-data  281474976710656            0 281474976710656
 @@NET@@
     lo: 8000000    100    0    0    0     0          0         0  8000000    100    0    0    0     0       0          0
   eth0: 18579456000 200000    0    0    0     0          0         0 1073741824 150000    0    0    0     0       0          0
@@ -85,6 +93,12 @@ describe("parseHost", () => {
   test("keeps real disks and drops pseudo COS mounts", () => {
     expect(host?.disks.length).toBe(1);
     expect(host?.disks[0].mount).toBe("/");
+  });
+
+  test("reports df source and type alongside each disk", () => {
+    expect(host?.disks[0].source).toBe("/dev/vda1");
+    expect(host?.disks[0].fstype).toBe("ext4");
+    expect(host?.disks[0].sharedMounts).toEqual([]);
   });
 
   test("sums physical interfaces only", () => {
@@ -232,5 +246,70 @@ describe("Panel.qml alert policy", () => {
     const summary = panel.match(/function summaryFor\([^)]*\)\s*\{[\s\S]*?\n  \}/)?.[0] || "";
     expect(summary).toMatch(/isWarningMuted\(hostAlias, rows\[index\]\.id\)\) continue[\s\S]*rows\[index\]\.state === "fail"/);
     expect(summary).toMatch(/isWarningMuted\(hostAlias, containerWarningId\(list\[c\]\)\)\) continue[\s\S]*state === "fail"/);
+  });
+});
+
+describe("btrfs subvolume grouping", () => {
+  // The reporter's layout: one disk, two partitions, four btrfs subvolumes
+  // sharing the btrfs partition plus a separate boot partition.
+  const BTRFS_DF = [
+    "/dev/nvme0n1p2 btrfs / 500107862016 460099244032 40008617984",
+    "/dev/nvme0n1p2 btrfs /home 500107862016 460099244032 40008617984",
+    "/dev/nvme0n1p2 btrfs /var/log 500107862016 460099244032 40008617984",
+    "/dev/nvme0n1p2 btrfs /.snapshots 500107862016 460099244032 40008617984",
+    "/dev/nvme0n1p1 vfat /boot 1073741824 268435456 805306368",
+  ];
+
+  const disks = groupDisksBySource(parseDiskRows(BTRFS_DF));
+
+  test("collapses subvolumes of one filesystem into a single disk", () => {
+    expect(disks.length).toBe(2);
+  });
+
+  test("keeps separate partitions of the same physical disk apart", () => {
+    expect(disks.map((disk) => disk.mount).sort()).toEqual(["/", "/boot"]);
+  });
+
+  test("picks the shallowest mount as the group's primary", () => {
+    const pool = disks.find((disk) => disk.source === "/dev/nvme0n1p2");
+    expect(pool?.mount).toBe("/");
+    expect(pool?.fstype).toBe("btrfs");
+    expect(pool?.sharedMounts).toEqual(["/.snapshots", "/home", "/var/log"]);
+  });
+
+  test("raises one warning, not four, for a filesystem near capacity", () => {
+    // 460099244032 / 500107862016 = 92% — over the 80% fail threshold. Before
+    // grouping this produced four identical red cards and skewed the rollup.
+    const failing = disks.filter((disk) => disk.usedBytes / disk.totalBytes >= 0.8);
+    expect(failing.length).toBe(1);
+  });
+
+  test("reports the fullest member so quotas cannot hide a full subvolume", () => {
+    const quota = groupDisksBySource(parseDiskRows([
+      "/dev/nvme0n1p2 btrfs / 1000 100 900",
+      "/dev/nvme0n1p2 btrfs /home 1000 950 50",
+    ]));
+    expect(quota.length).toBe(1);
+    expect(quota[0].mount).toBe("/");
+    expect(quota[0].usedBytes).toBe(950);
+  });
+
+  test("does not group filesystems df cannot name", () => {
+    const unnamed = groupDisksBySource(parseDiskRows([
+      "- fuse /mnt/a 1000 100 900",
+      "- fuse /mnt/b 2000 200 1800",
+    ]));
+    expect(unnamed.length).toBe(2);
+  });
+
+  test("keeps mount points containing spaces intact", () => {
+    const rows = parseDiskRows(["/dev/sdb1 ext4 /mnt/my backup drive 1000 100 900"]);
+    expect(rows.length).toBe(1);
+    expect(rows[0].mount).toBe("/mnt/my backup drive");
+    expect(rows[0].usedBytes).toBe(100);
+  });
+
+  test("asks df for the source and type columns", () => {
+    expect(REMOTE_SCRIPT).toContain("--output=source,fstype,target,size,used,avail");
   });
 });

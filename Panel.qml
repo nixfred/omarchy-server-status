@@ -578,6 +578,19 @@ Panel {
     return "pass"
   }
 
+  // The backend reports one card per filesystem, not per mount point, because
+  // btrfs subvolumes and bind mounts share an allocation pool and would
+  // otherwise raise the same warning several times. Say so on the card,
+  // otherwise a host with four subvolumes looks like it lost three of them.
+  // Only the count is shown: the other mount paths stay out of the tile so
+  // privacy mode has nothing extra to mask.
+  function diskShareSuffix(disk) {
+    var shared = disk && disk.sharedMounts instanceof Array ? disk.sharedMounts : []
+    if (shared.length < 1) return ""
+    var fstype = String(disk && disk.fstype || "")
+    return " · " + (fstype !== "" ? fstype + " · " : "") + (shared.length + 1) + " volumes"
+  }
+
   function hostRows(info, previous, elapsedSec) {
     if (!info) return []
     var rows = []
@@ -606,7 +619,7 @@ Panel {
         id: "disk-" + disk.mount,
         label: "Disk " + disk.mount,
         state: levelFor(frac, 0.7, 0.8),
-        detail: formatBytes(disk.usedBytes) + " / " + formatBytes(disk.totalBytes),
+        detail: formatBytes(disk.usedBytes) + " / " + formatBytes(disk.totalBytes) + diskShareSuffix(disk),
         value: frac
       })
     }
