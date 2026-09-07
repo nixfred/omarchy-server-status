@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 330" width="1200" height="330" role="img" aria-label="Data flow: the Omarchy panel asks the Bun backend, which makes one read-only SSH round trip per host and returns a sanitized JSON snapshot. Nothing is installed on the server.">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#080d17"/>
+      <stop offset="100%" stop-color="#0d1424"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#38bdf8"/>
+    </marker>
+    <marker id="arrowBack" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#5eead4"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="330" rx="14" fill="url(#bg)"/>
+
+  <text x="40" y="44" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" letter-spacing="3.4" fill="#6b86a8">ONE READ-ONLY SSH ROUND TRIP PER REFRESH</text>
+
+
+  <!-- boundary -->
+  <line x1="600" y1="70" x2="600" y2="286" stroke="#274b73" stroke-dasharray="5 7" stroke-opacity="0.7"/>
+  <text x="588" y="284" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" letter-spacing="2.4" fill="#6b86a8">YOUR DESKTOP</text>
+  <text x="612" y="284" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" letter-spacing="2.4" fill="#6b86a8">YOUR SERVER · UNTOUCHED</text>
+
+  <!-- node 1: panel -->
+  <g transform="translate(40 78)">
+    <rect width="220" height="132" rx="12" fill="#101c30" stroke="#274b73"/>
+    <text x="20" y="34" font-family="ui-sans-serif, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="17" font-weight="700" fill="#e8f2ff">Omarchy panel</text>
+    <text x="20" y="60" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#8fa9c9">Panel.qml</text>
+    <text x="20" y="88" font-family="ui-sans-serif, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#7f97b5">chips, cards, mutes,</text>
+    <text x="20" y="108" font-family="ui-sans-serif, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#7f97b5">notifications, cache</text>
+  </g>
+
+  <!-- node 2: backend -->
+  <g transform="translate(330 78)">
+    <rect width="220" height="132" rx="12" fill="#101c30" stroke="#274b73"/>
+    <text x="20" y="34" font-family="ui-sans-serif, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="17" font-weight="700" fill="#e8f2ff">Bun backend</text>
+    <text x="20" y="60" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#8fa9c9">server-status.ts</text>
+    <text x="20" y="88" font-family="ui-sans-serif, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#7f97b5">tailscale status --json</text>
+    <text x="20" y="108" font-family="ui-sans-serif, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#7f97b5">ssh -o BatchMode=yes</text>
+  </g>
+
+  <!-- node 3: remote -->
+  <g transform="translate(660 78)">
+    <rect width="500" height="132" rx="12" fill="#0e1a2c" stroke="#2f5a86"/>
+    <text x="24" y="34" font-family="ui-sans-serif, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="17" font-weight="700" fill="#e8f2ff">Read-only script · one SSH invocation, nothing left behind</text>
+    <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12">
+      <g transform="translate(24 54)">
+        <rect width="216" height="58" rx="9" fill="#132a44" stroke="#274b73"/>
+        <text x="14" y="24" fill="#7dd3fc">/proc · free · df</text>
+        <text x="14" y="44" fill="#7f97b5">load, memory, disk, net</text>
+      </g>
+      <g transform="translate(258 54)">
+        <rect width="218" height="58" rx="9" fill="#132a44" stroke="#274b73"/>
+        <text x="14" y="24" fill="#7dd3fc">docker ps / stats</text>
+        <text x="14" y="44" fill="#7f97b5">health, CPU, mem, restarts</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- request arrows -->
+  <line x1="262" y1="128" x2="326" y2="128" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="552" y1="128" x2="656" y2="128" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- return path -->
+  <path d="M900 214 L900 244 L150 244 L150 214" fill="none" stroke="#5eead4" stroke-width="2" stroke-opacity="0.9" marker-end="url(#arrowBack)"/>
+  <rect x="452" y="228" width="296" height="32" rx="16" fill="#0b2a24" stroke="#34d399" stroke-opacity="0.55"/>
+  <text x="600" y="249" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" letter-spacing="1.4" fill="#6ee7b7">SANITIZED JSON SNAPSHOT</text>
+
+  <!-- guarantee strip -->
+  <g transform="translate(40 306)">
+    <text x="596" y="14" text-anchor="middle" font-family="ui-sans-serif, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#7f97b5">No agent installed · no daemon left running · no writes · container environment variables never leave the host</text>
+  </g>
+</svg>

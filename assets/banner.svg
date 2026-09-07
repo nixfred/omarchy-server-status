@@ -1,0 +1,147 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 400" width="1200" height="400" role="img" aria-label="Tailscale Host Monitor — a glanceable tailnet dashboard in the Omarchy bar">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#070b14"/>
+      <stop offset="55%" stop-color="#0b1220"/>
+      <stop offset="100%" stop-color="#120a1c"/>
+    </linearGradient>
+    <linearGradient id="neon" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#5eead4"/>
+      <stop offset="55%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#c084fc"/>
+    </linearGradient>
+    <linearGradient id="glassTop" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#12203a" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#0a1120" stop-opacity="0.95"/>
+    </linearGradient>
+    <linearGradient id="fadeRight" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#0b1220" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#0b1220" stop-opacity="0.85"/>
+    </linearGradient>
+    <radialGradient id="glowCyan" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%" stop-color="#22d3ee" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#22d3ee" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowMagenta" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%" stop-color="#e879f9" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#e879f9" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1200" height="400" fill="url(#sky)"/>
+  <ellipse cx="180" cy="70" rx="360" ry="220" fill="url(#glowCyan)"/>
+  <ellipse cx="1080" cy="360" rx="380" ry="240" fill="url(#glowMagenta)"/>
+
+  <!-- tailnet ribbon: sits below the copy so nothing crosses the type -->
+  <g stroke="#38bdf8" stroke-opacity="0.28" stroke-width="1" fill="none">
+    <path d="M60 372 L196 352 L332 380 L470 356 L610 378 L748 354 L886 380 L1024 356 L1150 374"/>
+    <path d="M60 372 L332 380 L610 378 L886 380 L1150 374"/>
+    <path d="M196 352 L470 356 L748 354 L1024 356"/>
+  </g>
+  <g>
+    <circle cx="60" cy="372" r="3.5" fill="#5eead4"/>
+    <circle cx="196" cy="352" r="3.5" fill="#5eead4"/>
+    <circle cx="332" cy="380" r="3.5" fill="#fbbf24"/>
+    <circle cx="470" cy="356" r="3.5" fill="#5eead4"/>
+    <circle cx="610" cy="378" r="3.5" fill="#5eead4"/>
+    <circle cx="748" cy="354" r="3.5" fill="#f87171"/>
+    <circle cx="886" cy="380" r="3.5" fill="#5eead4"/>
+    <circle cx="1024" cy="356" r="3.5" fill="#5eead4"/>
+    <circle cx="1150" cy="374" r="3.5" fill="#5eead4"/>
+  </g>
+
+  <!-- horizontal rule under the wordmark -->
+  <rect x="72" y="86" width="120" height="3" rx="1.5" fill="url(#neon)"/>
+
+  <text x="72" y="70" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" letter-spacing="5.5" fill="#5eead4" fill-opacity="0.9">OMARCHY BAR WIDGET</text>
+
+  <text x="70" y="164" font-family="ui-sans-serif, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="62" font-weight="800" letter-spacing="-1.5" fill="#e8f2ff">Tailscale</text>
+  <text x="70" y="232" font-family="ui-sans-serif, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="62" font-weight="800" letter-spacing="-1.5" fill="url(#neon)">Host Monitor</text>
+
+  <text x="72" y="280" font-family="ui-sans-serif, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="19" fill="#93a7c4">Is everything OK over there? Answered in the bar, not in a browser.</text>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" letter-spacing="1.2">
+    <g>
+      <rect x="72" y="308" width="150" height="30" rx="15" fill="#0f2036" stroke="#38bdf8" stroke-opacity="0.45"/>
+      <text x="92" y="328" fill="#7dd3fc">AGENTLESS SSH</text>
+    </g>
+    <g>
+      <rect x="234" y="308" width="164" height="30" rx="15" fill="#0f2036" stroke="#38bdf8" stroke-opacity="0.45"/>
+      <text x="254" y="328" fill="#7dd3fc">DOCKER AWARE</text>
+    </g>
+    <g>
+      <rect x="410" y="308" width="196" height="30" rx="15" fill="#0f2036" stroke="#38bdf8" stroke-opacity="0.45"/>
+      <text x="430" y="328" fill="#7dd3fc">ZERO SERVER FOOTPRINT</text>
+    </g>
+  </g>
+
+  <!-- stylised panel, right side -->
+  <g transform="translate(690 60)">
+    <rect x="0" y="0" width="450" height="280" rx="16" fill="url(#glassTop)" stroke="#274b73" stroke-opacity="0.85"/>
+
+    <text x="24" y="34" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16" fill="#e8f2ff" font-weight="700">web-01</text>
+    <text x="24" y="52" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10" letter-spacing="2.4" fill="#6b86a8">SELECTED HOST · LINUX SERVER</text>
+    <g>
+      <rect x="330" y="20" width="96" height="22" rx="11" fill="#0c2a22" stroke="#34d399" stroke-opacity="0.5"/>
+      <circle cx="346" cy="31" r="4" fill="#34d399"/>
+      <text x="357" y="35" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#6ee7b7">ONLINE</text>
+    </g>
+
+    <!-- host chips -->
+    <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11">
+      <g><rect x="24" y="72" width="86" height="26" rx="13" fill="#132a44" stroke="#38bdf8" stroke-opacity="0.7"/><circle cx="40" cy="85" r="4" fill="#34d399"/><text x="51" y="89" fill="#cfe6ff">web-01</text></g>
+      <g><rect x="118" y="72" width="86" height="26" rx="13" fill="#0e1a2c" stroke="#274b73"/><circle cx="134" cy="85" r="4" fill="#34d399"/><text x="145" y="89" fill="#8fa9c9">db-01</text></g>
+      <g><rect x="212" y="72" width="86" height="26" rx="13" fill="#0e1a2c" stroke="#274b73"/><circle cx="228" cy="85" r="4" fill="#fbbf24"/><text x="239" y="89" fill="#8fa9c9">nas</text></g>
+      <g><rect x="306" y="72" width="86" height="26" rx="13" fill="#0e1a2c" stroke="#274b73"/><circle cx="322" cy="85" r="4" fill="#f87171"/><text x="333" y="89" fill="#8fa9c9">edge-2</text></g>
+      <g><rect x="400" y="72" width="26" height="26" rx="13" fill="#0e1a2c" stroke="#274b73"/><text x="409" y="90" fill="#8fa9c9">+</text></g>
+    </g>
+
+    <!-- metric rows -->
+    <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11">
+      <g transform="translate(24 118)">
+        <text x="0" y="10" letter-spacing="1.6" fill="#6b86a8">LOAD</text>
+        <text x="0" y="30" font-size="17" fill="#e8f2ff">0.42</text>
+        <rect x="0" y="40" width="120" height="5" rx="2.5" fill="#16283f"/>
+        <rect x="0" y="40" width="42" height="5" rx="2.5" fill="#34d399"/>
+      </g>
+      <g transform="translate(168 118)">
+        <text x="0" y="10" letter-spacing="1.6" fill="#6b86a8">MEMORY</text>
+        <text x="0" y="30" font-size="17" fill="#fbbf24">78%</text>
+        <rect x="0" y="40" width="120" height="5" rx="2.5" fill="#16283f"/>
+        <rect x="0" y="40" width="94" height="5" rx="2.5" fill="#fbbf24"/>
+      </g>
+      <g transform="translate(312 118)">
+        <text x="0" y="10" letter-spacing="1.6" fill="#6b86a8">DISK /</text>
+        <text x="0" y="30" font-size="17" fill="#e8f2ff">61%</text>
+        <rect x="0" y="40" width="114" height="5" rx="2.5" fill="#16283f"/>
+        <rect x="0" y="40" width="70" height="5" rx="2.5" fill="#34d399"/>
+      </g>
+    </g>
+
+    <line x1="24" y1="186" x2="426" y2="186" stroke="#274b73" stroke-opacity="0.6"/>
+
+    <!-- container cards -->
+    <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11">
+      <g transform="translate(24 200)">
+        <rect width="126" height="56" rx="9" fill="#0e1a2c" stroke="#274b73"/>
+        <circle cx="14" cy="18" r="4" fill="#34d399"/>
+        <text x="26" y="22" fill="#cfe6ff">caddy</text>
+        <text x="12" y="42" fill="#7f97b5">1.2% · 84MB</text>
+      </g>
+      <g transform="translate(162 200)">
+        <rect width="126" height="56" rx="9" fill="#0e1a2c" stroke="#274b73"/>
+        <circle cx="14" cy="18" r="4" fill="#34d399"/>
+        <text x="26" y="22" fill="#cfe6ff">postgres</text>
+        <text x="12" y="42" fill="#7f97b5">4.8% · 512MB</text>
+      </g>
+      <g transform="translate(300 200)">
+        <rect width="126" height="56" rx="9" fill="#2a1216" stroke="#f87171" stroke-opacity="0.65"/>
+        <circle cx="14" cy="18" r="4" fill="#f87171"/>
+        <text x="26" y="22" fill="#fecaca">worker</text>
+        <text x="12" y="42" fill="#fca5a5">restarting ×3</text>
+      </g>
+    </g>
+  </g>
+
+  <rect x="1150" y="0" width="50" height="400" fill="url(#fadeRight)"/>
+</svg>

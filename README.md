@@ -1,35 +1,71 @@
-# Tailscale Host Monitor for Omarchy
+<div align="center">
 
-**A glanceable, selective monitor for your Tailscale network, living in the Omarchy bar.** If
-you run a couple of VPSes, a homelab box, or a small Docker-based product,
-this widget answers "is everything OK over there?" without opening a browser
-dashboard or SSHing around: host load, memory, disk, network, and every
-Docker container's health and resource usage — one click away, with desktop
-notifications when something crosses a threshold. It complements (not
-replaces) full monitoring stacks: no history, no server-side storage, just
-the current truth on demand.
+<img src="assets/banner.svg" alt="Tailscale Host Monitor — a glanceable tailnet dashboard living in the Omarchy bar" width="100%">
 
-![Tailscale Host Monitor showing a privacy-masked selected host and an unreachable-host alert](preview.png)
+# Tailscale Host Monitor
 
-The node picker discovers the tailnet with `tailscale status --json`. Only the
-nodes you select appear in the monitor. Linux nodes receive deep telemetry via
-**one read-only SSH round trip**; macOS, Windows, iOS, and Android nodes show the
-Tailscale presence, address, DNS, device type, tags, and last-seen information
-that is available for their platform. Offline nodes remain selectable.
+**Your whole tailnet, one dot in the bar. Green means go.**
 
-Agentless by design: every Linux telemetry refresh is **one read-only SSH round trip** —
-nothing is installed, written, or left running on your servers. Hosts
-without Docker simply show host metrics; the containers column appears only
-when containers exist.
+[![Omarchy plugin](https://img.shields.io/badge/Omarchy-bar%20widget-38bdf8?style=flat-square)](https://omarchy.org)
+[![Tailscale native](https://img.shields.io/badge/Tailscale-native%20discovery-5eead4?style=flat-square)](https://tailscale.com)
+[![Runs on Bun](https://img.shields.io/badge/runtime-Bun%201.2%2B-c084fc?style=flat-square)](https://bun.sh)
+[![Agents installed](https://img.shields.io/badge/agents%20installed-zero-34d399?style=flat-square)](#how-it-works)
+[![License MIT](https://img.shields.io/badge/license-MIT-8fa9c9?style=flat-square)](./LICENSE)
 
-```text
-panel → bun backend → ssh <host> '<read-only script>' → JSON snapshot → panel
-```
+</div>
+
+---
+
+You run a couple of VPSes, a homelab box, maybe a small Docker product. You do
+not run Prometheus, and you should not have to open a browser tab to answer the
+only question you actually ask all day:
+
+> **Is everything OK over there?**
+
+This is a bar widget that answers it. Load, memory, per-disk usage, network
+rate, uptime, and every Docker container's health and resource usage — one
+click from the Omarchy bar, with desktop notifications when something crosses a
+threshold. It complements a real monitoring stack rather than replacing one: no
+history, no time series, no server-side storage. Just the current truth, on
+demand.
+
+## Tailscale-centric by design
+
+The node list *is* your tailnet. There is no hosts file to hand-maintain, no
+inventory to keep in sync, no exporter to deploy.
+
+- Discovery reads `tailscale status --json` from the **local** Tailscale daemon.
+  It does not ping, probe, or SSH your tailnet to find devices.
+- **You pick the nodes.** Click to add or remove; only what you select shows up
+  in the dashboard. Offline nodes stay selectable.
+- **Every device type is honest about itself.** Linux nodes get deep telemetry
+  over SSH. Macs, Windows, iOS, and Android nodes show what Tailscale actually
+  knows — presence, address, DNS name, device type, tags, last seen — and do not
+  pretend to have metrics they cannot provide.
+- Tailscale is the addressing layer, so it works the same whether the box is in
+  your closet or in another hemisphere.
+
+## How it works
+
+<img src="assets/flow.svg" alt="The Omarchy panel asks the Bun backend, which makes one read-only SSH round trip per host and returns a sanitized JSON snapshot. Nothing is installed on the server." width="100%">
+
+Agentless, and not in the marketing sense: every Linux telemetry refresh is
+**one read-only SSH round trip**. Nothing is installed, written, or left
+running on your servers. Remove the plugin and there is nothing to clean up
+remotely, because nothing was ever put there.
 
 The remote script reads `/proc`, `free`, and `df` for host metrics, and
-`docker ps / stats / inspect` for containers. `docker inspect` deliberately
-uses a narrow format string: full inspect output would leak container
-environment variables (secrets) into the snapshot.
+`docker ps / stats / inspect` for containers. Hosts without Docker simply show
+host metrics — the containers column appears only when containers exist.
+`docker inspect` deliberately uses a narrow format string: full inspect output
+would leak container environment variables (secrets) into the snapshot.
+
+## What it looks like
+
+![The panel with privacy mode enabled: masked hostnames and Tailscale address, nine monitored host chips, and the selected host still fetching telemetry](preview.png)
+
+*Privacy mode on — hostnames, addresses, and DNS names masked for screen
+sharing. Toggle it off and these are your real nodes.*
 
 ## Features
 
@@ -63,13 +99,11 @@ environment variables (secrets) into the snapshot.
 - **Persistent host cache** — the latest safe snapshot for every host is kept
   in `~/.cache/omarchy-server-status-snapshots.json`; cached cards appear
   immediately after a shell/plugin reload and remain visible during refresh
-- **Selective tailnet discovery** — click to add or remove any Tailscale node;
-  unselected devices stay out of the monitor dashboard
-- **Type-aware nodes** — deep Linux telemetry where supported and honest
-  Tailscale-only details for Macs, mobile devices, Windows, and offline nodes
 - **Desktop notifications** — `notify-send` on threshold breaches, container
   failures, unreachable hosts, and recoveries
-- **Zero server footprint** — works with any Linux host you can SSH into
+- **Privacy mode** — mask hostnames, addresses, DNS names, container names, and
+  remote error text for screenshots and screen sharing, with zero effect on
+  what is collected or how health is judged
 
 ## Requirements
 
@@ -142,6 +176,8 @@ The chip follows the pointer as a raised drag ghost, while the destination
 shows an insertion bar and expands slightly. The new order is written immediately to the `monitoredHosts` array in
 `~/.config/omarchy/server-status.json` and is used after every reload.
 
+## Muting without lying to yourself
+
 Click the Tailscale IP in the selected-host box to copy it with `wl-copy`.
 When a host metric or container is warning/failing, its card shows **MUTE**.
 Clicking the card records that warning ID under the selected host's
@@ -154,6 +190,11 @@ status box. A muted host stays in the dashboard with all of its real data, but
 does not send notifications or contribute yellow/red to the bar icon. Click
 the field again to re-enable alerting. Host-wide mutes are stored in the
 `mutedHosts` array in `~/.config/omarchy/server-status.json`.
+
+Muting suppresses the alert, never the number. A muted card stays the color of
+its real state, so a maintenance window cannot quietly become a blind spot.
+
+## Scan cadences
 
 Scanning is split into three independent schedules. By default, the selected
 host receives one read-only SSH telemetry request every 30 seconds while the
@@ -196,6 +237,7 @@ opens an SSH terminal to the focused host on the current workspace.
 | `customHostScanSec`     | `30`         | Seconds used when selected-host cadence is Custom |
 | `tailnetScanPreset`     | `5 minutes`  | Local Tailscale daemon discovery cadence |
 | `customTailnetScanSec`  | `300`        | Seconds used when Tailscale cadence is Custom |
+| `allHostsScanPreset`    | `5 minutes`  | Background SSH sweep cadence across selected Linux hosts |
 | `customAllHostsScanSec` | `300`        | Seconds used when all-host cadence is Custom |
 | `panelWidth`            | `1000`       | Popup width in layout units |
 | `privacyMode`           | `false`      | Mask identifying details for screenshots and screen sharing |
@@ -222,8 +264,27 @@ omarchy plugin validate .
 
 - The remote script is read-only; the plugin never mutates server state.
 - Snapshots exclude container environment variables by design.
+- SSH runs with `BatchMode=yes`, so a host that would prompt for a password
+  fails closed instead of hanging the panel.
+- The on-disk snapshot cache is `0600` and holds only sanitized data.
 - Use a dedicated, restricted SSH identity if you want the panel's key to be
   unable to do anything beyond reading status.
+
+## Credits
+
+The agentless core of this plugin — the read-only SSH collector, the Docker
+metrics parsing, and the narrow `docker inspect` format string that keeps
+container environment variables out of every snapshot — is the original work of
+**[ryu](https://github.com/ryuhzk)**. The Tailscale discovery layer, node
+selection, per-warning and per-host muting, the snapshot cache, and the
+scheduling model were built on top of that foundation.
+
+Built against the [Omarchy](https://omarchy.org) Shell plugin API and rendered
+with [Quickshell](https://quickshell.outfoxxed.me).
+
+> Not affiliated with, endorsed by, or sponsored by Tailscale Inc. This is an
+> unofficial third-party tool that reads the output of the `tailscale` CLI on
+> your own machine. Tailscale is a trademark of Tailscale Inc.
 
 ## License
 

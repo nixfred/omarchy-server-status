@@ -1,0 +1,7 @@
+# local backups made before edits
+*.bak
+*.bak-*
+
+# build output
+dist/
+node_modules/
