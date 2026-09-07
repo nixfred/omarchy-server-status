@@ -194,6 +194,24 @@ describe("Panel.qml delayed callbacks", () => {
     expect(panel).not.toContain("id: chipSshAction");
   });
 
+  test("alerts on the 5-minute load average, not the sampling-window spike", () => {
+    // The plugin's own SSH connection spikes the remote run queue (PAM session
+    // hooks and update-motd.d scripts firing alongside our docker queries), so
+    // load1 read during a refresh reports a critical alert on an idle host.
+    // That burst recurs on every refresh, so the averaging window — not a
+    // debounce — is what rejects it.
+    const hostRows = panel.match(/function hostRows\([^)]*\)\s*\{[\s\S]*?\n  \}/)?.[0] || "";
+    expect(hostRows).toContain("info.load5 / info.cpuCount");
+    expect(hostRows).not.toContain("info.load1 / info.cpuCount");
+  });
+
+  test("still shows all three load averages so nothing is hidden", () => {
+    const hostRows = panel.match(/function hostRows\([^)]*\)\s*\{[\s\S]*?\n  \}/)?.[0] || "";
+    expect(hostRows).toContain('"1m " + info.load1.toFixed(2)');
+    expect(hostRows).toContain('" · 5m " + info.load5.toFixed(2)');
+    expect(hostRows).toContain('" · 15m " + info.load15.toFixed(2)');
+  });
+
   test("contains no Hyprland workspace-switch launch path", () => {
     expect(panel).not.toContain("launchInNewWorkspace");
     expect(panel).not.toContain("workspaceProcess");

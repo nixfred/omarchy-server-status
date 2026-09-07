@@ -594,13 +594,27 @@ Panel {
   function hostRows(info, previous, elapsedSec) {
     if (!info) return []
     var rows = []
-    var loadPerCore = info.cpuCount > 0 ? info.load1 / info.cpuCount : 0
+    // Judge the 5-minute average, not load1. Opening the SSH session for a
+    // refresh briefly spikes the remote run queue itself: PAM session hooks
+    // and /etc/update-motd.d scripts (fail2ban, podman, incus, log greps) run
+    // on connect, concurrently with this plugin's own docker queries. A load1
+    // sample read inside that burst reports a critical alert on a host that is
+    // sitting idle, immediately followed by a recovery notification.
+    //
+    // A consecutive-sample debounce would not catch this: the burst is caused
+    // by our own connection, so it recurs on every single refresh rather than
+    // flapping randomly. A longer averaging window is what actually rejects a
+    // two-second spike, and sustained load — the thing worth alerting on —
+    // still reaches load5 within a couple of scans.
+    //
+    // Diagnosed by @kanthi with sar -q evidence from a 4-vCPU Azure VM.
+    var loadPerCore = info.cpuCount > 0 ? info.load5 / info.cpuCount : 0
     rows.push({
       id: "cpu",
       label: "CPU load",
       state: levelFor(loadPerCore, 0.7, 1.0),
-      detail: info.load1.toFixed(2) + " / " + info.load5.toFixed(2) + " / " + info.load15.toFixed(2)
-        + " · " + info.cpuCount + " cores",
+      detail: "1m " + info.load1.toFixed(2) + " · 5m " + info.load5.toFixed(2)
+        + " · 15m " + info.load15.toFixed(2) + " · " + info.cpuCount + " cores",
       value: Math.min(1, loadPerCore)
     })
     var memFrac = info.memTotalBytes > 0 ? (info.memTotalBytes - info.memAvailableBytes) / info.memTotalBytes : 0

@@ -71,8 +71,10 @@ sharing. Toggle it off and these are your real nodes.*
 
 - **Host metrics** — CPU load, memory, per-disk usage, network rate, uptime,
   with traffic-light thresholds (memory warns at 75%, red at 85%; disk warns
-  at 70%, red at 80%; load per core warns at 0.7, red at 1.0); read-only ISO
-  media is ignored because a full optical image is not actionable capacity
+  at 70%, red at 80%; load per core warns at 0.7, red at 1.0, judged on the
+  **5-minute** average — see [the observer effect](#the-observer-effect-load-spikes-caused-by-monitoring-itself));
+  read-only ISO media is ignored because a full optical image is not
+  actionable capacity
 - **Containers** — compact three-column cards show health, CPU%, memory versus its
   limit, restart count; unhealthy, restarting, or OOM-killed turns red
 - **One card per filesystem, not per mount** — btrfs subvolumes and bind mounts
@@ -260,20 +262,44 @@ Run the collector outside Omarchy to inspect the raw snapshot:
 bun run backend/server-status.ts status --host <ssh-alias>
 ```
 
-## Troubleshooting: Load Spikes & The Observer Effect
+## The observer effect: load spikes caused by monitoring itself
 
-If a host unexpectedly alerts with `CPU load 100%` or enters a warning state on refresh despite sustained CPU being mostly idle, check whether the remote host runs intensive scripts in `/etc/update-motd.d/` or PAM session hooks (e.g., querying `fail2ban-client`, `podman`, container runtimes, or scanning large log files).
+Opening an SSH session is not free on the host being measured. PAM session
+hooks and `/etc/update-motd.d/` scripts run on connect, and on a well-equipped
+server those can mean `fail2ban-client status`, `podman ps`, `incus list`,
+`df`, `free`, and a couple of log greps — all firing at once, concurrently
+with this plugin's own `docker ps` / `docker stats` / `docker inspect` calls.
 
-Because the collector opens an SSH session to run its read-only script, remote PAM session scripts execute concurrently with the collector's Docker queries (`docker ps`, `docker stats`, `docker inspect`). On machines with fewer cores (such as 2–4 core VMs), executing ~10–15 short-lived processes within a 2-second window can briefly populate the kernel run queue (`/proc/loadavg`), causing the plugin's `load1 / cpuCount >= 1.0` threshold to trigger a transient `CPU load 100%` alert.
+That is ten to fifteen short-lived processes inside a two-second window. On a
+2–4 core VM it is enough to fill the kernel run queue, and a `/proc/loadavg`
+sample taken inside that burst reports a host that is actually idle as
+`CPU load 100%` — followed moments later by a recovery notification once the
+burst clears.
 
-**Tip for monitored hosts:**
-Guard heavy custom MOTD scripts so they execute only for interactive user logins and exit immediately for non-interactive SSH telemetry probes:
+**The plugin judges the 5-minute average rather than `load1` for this reason.**
+A debounce would not have helped: the spike is caused by our own connection, so
+it recurs on every refresh instead of flapping at random. Only a longer
+averaging window rejects a two-second burst, and genuine sustained load still
+crosses the threshold within a couple of scans. All three averages stay visible
+on the card (`1m 5.19 · 5m 0.41 · 15m 0.22`), so you can see the spike happening
+without being alerted about it.
+
+If a host still reports load you cannot account for, time the login path
+directly:
 
 ```bash
-# In /etc/update-motd.d/<script>
-[ -t 1 ] || exit 0
+time ssh -o BatchMode=yes <host> true
 ```
 
+A connection that takes noticeably longer than the network round trip is doing
+work at session open. `run-parts --test /etc/update-motd.d` lists what runs
+there. Making those scripts cheaper, or moving the expensive ones out of the
+login path onto a timer, reduces the disturbance for every tool that connects —
+not just this one.
+
+Diagnosed by [@kanthi](https://github.com/kanthi) in
+[#1](https://github.com/nixfred/omarchy-server-status/pull/1), with `sar -q`
+evidence from a 4-vCPU Azure VM.
 
 ## Development
 
