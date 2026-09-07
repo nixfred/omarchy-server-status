@@ -260,6 +260,21 @@ Run the collector outside Omarchy to inspect the raw snapshot:
 bun run backend/server-status.ts status --host <ssh-alias>
 ```
 
+## Troubleshooting: Load Spikes & The Observer Effect
+
+If a host unexpectedly alerts with `CPU load 100%` or enters a warning state on refresh despite sustained CPU being mostly idle, check whether the remote host runs intensive scripts in `/etc/update-motd.d/` or PAM session hooks (e.g., querying `fail2ban-client`, `podman`, container runtimes, or scanning large log files).
+
+Because the collector opens an SSH session to run its read-only script, remote PAM session scripts execute concurrently with the collector's Docker queries (`docker ps`, `docker stats`, `docker inspect`). On machines with fewer cores (such as 2–4 core VMs), executing ~10–15 short-lived processes within a 2-second window can briefly populate the kernel run queue (`/proc/loadavg`), causing the plugin's `load1 / cpuCount >= 1.0` threshold to trigger a transient `CPU load 100%` alert.
+
+**Tip for monitored hosts:**
+Guard heavy custom MOTD scripts so they execute only for interactive user logins and exit immediately for non-interactive SSH telemetry probes:
+
+```bash
+# In /etc/update-motd.d/<script>
+[ -t 1 ] || exit 0
+```
+
+
 ## Development
 
 ```bash
