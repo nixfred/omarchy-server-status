@@ -114,6 +114,9 @@ sharing. Toggle it off and these are your real nodes.*
 - **Privacy mode** — mask hostnames, addresses, DNS names, container names, and
   remote error text for screenshots and screen sharing, with zero effect on
   what is collected or how health is judged
+- **About row** — the last line of the panel carries the plugin name and
+  version, with links to the repository and to [nixfred.com](https://nixfred.com);
+  hover a link to see where it goes
 
 ## Requirements
 

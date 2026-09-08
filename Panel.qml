@@ -12,6 +12,14 @@ Panel {
   moduleName: "io.github.nixfred.tailscale-host-monitor"
   ipcTarget: "io.github.nixfred.tailscale-host-monitor"
 
+  // Kept in step with manifest.json by a test, rather than read from disk at
+  // runtime: the panel should not gain a file read and a failure mode just to
+  // print its own version.
+  readonly property string pluginVersion: "0.6.2"
+  readonly property string pluginName: "Tailscale Host Monitor"
+  readonly property string repoUrl: "https://github.com/nixfred/omarchy-server-status"
+  readonly property string authorUrl: "https://nixfred.com"
+
   property bool refreshing: false
   property string processOutput: ""
   property string processError: ""
@@ -1045,6 +1053,11 @@ Panel {
     Quickshell.execDetached(terminalCommand(activeHost, ["btop || htop || top"]))
   }
 
+  function openUrl(url) {
+    root.close()
+    Quickshell.execDetached(["omarchy-launch-browser", String(url)])
+  }
+
   function openSettings() {
     root.close()
     Quickshell.execDetached(["omarchy-launch-editor", selectionPath])
@@ -1664,6 +1677,44 @@ Panel {
             font.pixelSize: Style.font.caption
             horizontalAlignment: Text.AlignRight
           }
+
+          // About line: the plugin's own identity, parked on the last row so it
+          // is findable without competing with host telemetry for attention.
+          Row {
+            anchors.right: parent.right
+            spacing: Style.space(6)
+
+            Text {
+              text: `${root.pluginName} ${root.pluginVersion}`
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            Text {
+              text: "·"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            AboutLink {
+              label: "GitHub"
+              url: root.repoUrl
+            }
+
+            Text {
+              text: "·"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            AboutLink {
+              label: "nixfred.com"
+              url: root.authorUrl
+            }
+          }
         }
 
         Rectangle {
@@ -1990,6 +2041,31 @@ Panel {
       PanelToolTip {
         visible: metricHover.containsMouse && metricTile.tooltipText !== ""
         text: metricTile.tooltipText
+      }
+    }
+  }
+
+  component AboutLink: Text {
+    id: aboutLink
+    required property string label
+    required property string url
+
+    text: label
+    color: linkHover.containsMouse ? Color.accent : root.dim
+    font.family: root.fontFamily
+    font.pixelSize: Style.font.caption
+    font.underline: linkHover.containsMouse
+
+    MouseArea {
+      id: linkHover
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: root.openUrl(aboutLink.url)
+
+      PanelToolTip {
+        visible: linkHover.containsMouse
+        text: aboutLink.url
       }
     }
   }

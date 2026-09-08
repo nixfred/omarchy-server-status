@@ -244,6 +244,28 @@ describe("Panel.qml delayed callbacks", () => {
     expect(tip).toContain('text.split("\\n")[0]');
   });
 
+  test("panel version matches manifest.json", () => {
+    // pluginVersion is hardcoded so the panel needs no runtime file read; this
+    // test is what keeps it honest when the manifest is bumped.
+    const manifest = JSON.parse(readFileSync(new URL("../manifest.json", import.meta.url), "utf8"));
+    const declared = panel.match(/readonly property string pluginVersion:\s*"([^"]+)"/)?.[1];
+    expect(declared).toBe(manifest.version);
+  });
+
+  test("about row carries the version and both links", () => {
+    expect(panel).toContain('readonly property string repoUrl: "https://github.com/nixfred/omarchy-server-status"');
+    expect(panel).toContain('readonly property string authorUrl: "https://nixfred.com"');
+    expect(panel).toContain("`${root.pluginName} ${root.pluginVersion}`");
+    expect(panel).toContain('label: "GitHub"');
+    expect(panel).toContain('label: "nixfred.com"');
+  });
+
+  test("about links open through the omarchy browser launcher", () => {
+    const openUrl = panel.match(/function openUrl\([^)]*\)\s*\{[\s\S]*?\n  \}/)?.[0] || "";
+    expect(openUrl).toContain('Quickshell.execDetached(["omarchy-launch-browser", String(url)])');
+    expect(openUrl).toContain("root.close()");
+  });
+
   test("contains no Hyprland workspace-switch launch path", () => {
     expect(panel).not.toContain("launchInNewWorkspace");
     expect(panel).not.toContain("workspaceProcess");
