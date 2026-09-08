@@ -222,6 +222,16 @@ describe("Panel.qml delayed callbacks", () => {
     expect(suffix).not.toContain("volumes");
   });
 
+  test("sanitizes remote mount paths before the shell-owned tooltip", () => {
+    // PanelToolTip cannot be pinned to PlainText from here, so each host-derived
+    // entry goes through plain() individually — plain() strips newlines, so
+    // sanitizing the joined string would collapse the list into one line.
+    const tooltip = panel.match(/function diskTooltip\([^)]*\)\s*\{[\s\S]*?\n  \}/)?.[0] || "";
+    expect(tooltip).toContain("mounts.map(plain).join");
+    expect(tooltip).toContain("plain(fstype)");
+    expect(tooltip).not.toMatch(/plain\([^)]*mounts\.join/);
+  });
+
   test("names every grouped mount in the tooltip", () => {
     const tooltip = panel.match(/function diskTooltip\([^)]*\)\s*\{[\s\S]*?\n  \}/)?.[0] || "";
     expect(tooltip).toContain("[String(disk.mount)].concat(shared)");
@@ -383,5 +393,71 @@ describe("btrfs subvolume grouping", () => {
 
   test("asks df for the source and type columns", () => {
     expect(REMOTE_SCRIPT).toContain("--output=source,fstype,target,size,used,avail");
+  });
+});
+
+describe("bounded collection", () => {
+  const streamOf = (...chunks: string[]) => new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(new TextEncoder().encode(chunk));
+      controller.close();
+    },
+  });
+
+  test("returns the full text under the byte budget", async () => {
+    const { readBounded } = await import("../backend/collect");
+    const result = await readBounded(streamOf("hello ", "world"), 64, () => {});
+    expect(result).toEqual({ text: "hello world", overflow: false });
+  });
+
+  test("kills the producer and reports overflow past the budget", async () => {
+    const { readBounded } = await import("../backend/collect");
+    let killed = false;
+    const result = await readBounded(streamOf("a".repeat(10), "b".repeat(10)), 15, () => { killed = true; });
+    expect(result.overflow).toBe(true);
+    expect(result.text).toBe("");
+    expect(killed).toBe(true);
+  });
+
+  test("caps container rows before they reach the panel", () => {
+    const lines = Array.from({ length: 300 }, (_, i) =>
+      `{"Names":"c${i}","Image":"img","Status":"Up","State":"running"}`);
+    const sections = new Map<string, string[]>([
+      ["DOCKER_PS", lines],
+      ["DOCKER_STATS", []],
+      ["DOCKER_INSPECT", []],
+    ]);
+    expect(parseContainers(sections).length).toBe(256);
+  });
+
+  test("caps tailnet devices before sorting", () => {
+    const peers: Record<string, unknown> = {};
+    for (let i = 0; i < 600; i += 1) peers[`p${i}`] = { ID: `id${i}`, HostName: `host${i}`, OS: "linux" };
+    const snapshot = parseTailnetStatus(JSON.stringify({ BackendState: "Running", Peer: peers }));
+    expect(snapshot.devices.length).toBe(512);
+  });
+});
+
+describe("Panel.qml rendering sinks", () => {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8");
+
+  test("pins every Text element to PlainText", () => {
+    const textCount = (panel.match(/\bText\s*\{/g) || []).length;
+    const pinned = (panel.match(/textFormat:\s*Text\.PlainText/g) || []).length;
+    expect(textCount).toBeGreaterThan(0);
+    expect(pinned).toBe(textCount);
+  });
+
+  test("sanitizes remote-derived strings before shell-owned sinks", () => {
+    expect(panel).toContain("function plain(");
+    expect(panel).toMatch(/tooltipText: root\.plain\(`Tailscale Host Monitor/);
+    expect(panel).toMatch(/"notify-send",[^\n]*"--", plain\(title\), plain\(body\)/);
+    expect(panel).toContain('["wl-copy", "--", text]');
+  });
+
+  test("collects backend output through a byte budget, not StdioCollector", () => {
+    expect(panel).not.toContain("StdioCollector");
+    expect((panel.match(/splitMarker: ""/g) || []).length).toBe(4);
+    expect(panel).toContain("maxBackendOutputChars");
   });
 });

@@ -15,7 +15,7 @@ Panel {
   // Kept in step with manifest.json by a test, rather than read from disk at
   // runtime: the panel should not gain a file read and a failure mode just to
   // print its own version.
-  readonly property string pluginVersion: "0.6.2"
+  readonly property string pluginVersion: "0.7.0"
   readonly property string pluginName: "Tailscale Host Monitor"
   readonly property string repoUrl: "https://github.com/nixfred/omarchy-server-status"
   readonly property string authorUrl: "https://nixfred.com"
@@ -79,6 +79,12 @@ Panel {
   readonly property int allHostsScanIntervalSec: cadenceSeconds(allHostsScanPreset, customAllHostsScanSec, 300)
   readonly property int panelWidth: boundedInt(setting("panelWidth", 1000), 320, 1200)
   readonly property bool privacyMode: String(setting("privacyMode", false)).toLowerCase() === "true"
+  // Backend output is byte-capped at the producer (backend/collect.ts and
+  // backend/tailnet.ts); these budgets are defense in depth so no
+  // whole-stream collector remains in the shell process. .length counts
+  // UTF-16 units, which is fine for a backstop.
+  readonly property int maxBackendOutputChars: 2097152
+  readonly property int maxBackendErrorChars: 16384
   readonly property string backendPath: decodeURIComponent(
     String(Qt.resolvedUrl("backend/server-status.ts")).replace(/^file:\/\//, ""))
   readonly property string selectionPath: Quickshell.env("HOME") + "/.config/omarchy/server-status.json"
@@ -432,9 +438,20 @@ Panel {
   function copyText(value) {
     var text = String(value || "")
     if (text === "") return
-    Quickshell.execDetached(["wl-copy", text])
+    Quickshell.execDetached(["wl-copy", "--", text])
     copiedValue = text
     copyReset.restart()
+  }
+
+  // Tooltips, PanelHero and notifications are rendered by the shell with
+  // Text.AutoText; this plugin cannot pin the format there. Remote-derived
+  // strings (hostnames, DNS names, container names) must lose markup and
+  // control characters and get a length cap before crossing that boundary.
+  function plain(value) {
+    return String(value || "")
+      .replace(/[<>&]/g, " ")
+      .replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
+      .slice(0, 200)
   }
 
   function osIcon(os) {
@@ -612,8 +629,12 @@ Panel {
     if (shared.length < 1) return ""
     var fstype = String(disk && disk.fstype || "")
     var mounts = [String(disk.mount)].concat(shared)
-    return (fstype !== "" ? fstype + " · " : "") + mounts.length
-      + " volumes on one filesystem\n" + mounts.join("\n")
+    // Mount paths and the filesystem type come from the remote host and land in
+    // PanelToolTip, a shell-owned component this plugin cannot pin to
+    // PlainText. Sanitize each entry separately: plain() strips C0 controls,
+    // newline included, so cleaning the joined string would flatten the list.
+    return (fstype !== "" ? plain(fstype) + " · " : "") + mounts.length
+      + " volumes on one filesystem\n" + mounts.map(plain).join("\n")
   }
 
   function displayMetricTooltip(metric) {
@@ -975,7 +996,7 @@ Panel {
     var keys = Object.assign({}, notifiedKeyByHost)
     keys[hostAlias] = key
     notifiedKeyByHost = keys
-    Quickshell.execDetached(["notify-send", "-a", "Server Status", "-u", urgency, title, body])
+    Quickshell.execDetached(["notify-send", "-a", "Server Status", "-u", urgency, "--", plain(title), plain(body)])
   }
 
   function summaryForSnapshot(snap, hostAlias) {
@@ -1083,10 +1104,11 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    tooltipText: `Tailscale Host Monitor · ${root.barStateText()} · ${root.activeDevice ? root.displayHostName(root.activeHost, root.activeDevice.name, root.activeDevice) : (root.activeHost ? root.displayHostName(root.activeHost, root.activeHost, null) : "no nodes")}`
+    tooltipText: root.plain(`Tailscale Host Monitor · ${root.barStateText()} · ${root.activeDevice ? root.displayHostName(root.activeHost, root.activeDevice.name, root.activeDevice) : (root.activeHost ? root.displayHostName(root.activeHost, root.activeHost, null) : "no nodes")}`)
     iconComponent: Component {
       Item {
         Text {
+          textFormat: Text.PlainText
           anchors.centerIn: parent
           text: "󰒋"
           color: root.stateColor(root.barState)
@@ -1156,15 +1178,15 @@ Panel {
 
           PanelHero {
             width: parent.width
-            title: root.hostInfo
+            title: root.plain(root.hostInfo
               ? root.displayHostName(root.activeHost, root.hostInfo.hostname, root.activeDevice)
-              : (root.activeDevice ? root.displayHostName(root.activeHost, root.activeDevice.name, root.activeDevice) : "No monitored nodes")
+              : (root.activeDevice ? root.displayHostName(root.activeHost, root.activeDevice.name, root.activeDevice) : "No monitored nodes"))
             meta: root.activeDevice
               ? `TAILSCALE HOST MONITOR · SELECTED HOST`
               : "TAILSCALE HOST MONITOR"
-            detail: root.activeDevice
+            detail: root.plain(root.activeDevice
               ? `${root.activeDevice.kind} · ${root.displayDns(root.activeHost, root.activeDevice.dnsName || root.activeHost, root.activeDevice)}`
-              : "Choose which Tailscale nodes this dashboard monitors"
+              : "Choose which Tailscale nodes this dashboard monitors")
             foreground: root.foreground
             fontFamily: root.fontFamily
             iconComponent: Component {
@@ -1173,6 +1195,7 @@ Panel {
                 implicitHeight: Style.font.display
 
                 Text {
+                  textFormat: Text.PlainText
                   anchors.centerIn: parent
                   text: "󰒋"
                   color: root.activeHost === "" ? root.dim : root.stateColor(root.hostIndicatorState(root.activeHost))
@@ -1232,6 +1255,7 @@ Panel {
                   }
 
                   Text {
+                    textFormat: Text.PlainText
                     anchors.verticalCenter: parent.verticalCenter
                     text: root.displayHostName(target, modelData.name, modelData)
                     color: root.foreground
@@ -1240,6 +1264,7 @@ Panel {
                   }
 
                   Text {
+                    textFormat: Text.PlainText
                     anchors.verticalCenter: parent.verticalCenter
                     text: "󰆍"
                     color: modelData.online ? Color.accent : root.dim
@@ -1332,6 +1357,7 @@ Panel {
               border.color: Color.accent
 
               Text {
+                textFormat: Text.PlainText
                 id: manageNodesLabel
                 anchors.centerIn: parent
                 text: root.pickerOpen ? "Done" : "+"
@@ -1356,6 +1382,7 @@ Panel {
             visible: root.pickerOpen
 
             Text {
+              textFormat: Text.PlainText
               width: parent.width
               text: `${root.tailnetDevices.length} Tailscale nodes · click to add or remove · offline nodes remain available`
               color: root.dim
@@ -1392,6 +1419,7 @@ Panel {
                     spacing: Style.space(5)
 
                     Text {
+                      textFormat: Text.PlainText
                       anchors.verticalCenter: parent.verticalCenter
                       text: root.osIcon(modelData.os)
                       color: modelData.online ? "#69c58a" : root.dim
@@ -1400,6 +1428,7 @@ Panel {
                     }
 
                     Text {
+                      textFormat: Text.PlainText
                       width: parent.width - Style.space(30)
                       anchors.verticalCenter: parent.verticalCenter
                       text: root.displayHostName(root.configuredTarget(modelData), modelData.name, modelData)
@@ -1411,6 +1440,7 @@ Panel {
                     }
 
                     Text {
+                      textFormat: Text.PlainText
                       anchors.verticalCenter: parent.verticalCenter
                       text: selected ? "✓" : "+"
                       color: selected ? Color.accent : root.foreground
@@ -1541,6 +1571,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               anchors.left: parent.left
               anchors.right: parent.right
               anchors.bottom: parent.bottom
@@ -1558,6 +1589,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             width: parent.width
             text: root.displayError(root.tailnetError !== "" ? root.tailnetError : root.lastError)
             visible: text !== ""
@@ -1598,6 +1630,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             width: parent.width
             visible: !root.pickerOpen && root.activeDevice && root.activeDevice.online && root.activeDevice.supportsMetrics && !root.hostInfo
             text: root.refreshing
@@ -1667,6 +1700,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             width: parent.width
             text: snapshot.generatedAt
               ? `Cached host data · updated ${new Date(snapshot.generatedAt).toLocaleTimeString()}${root.refreshing && root.fetchHost === root.activeHost ? " · refreshing in background…" : ""}`
@@ -1686,6 +1720,7 @@ Panel {
 
             Text {
               text: `${root.pluginName} ${root.pluginVersion}`
+              textFormat: Text.PlainText
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -1693,6 +1728,7 @@ Panel {
 
             Text {
               text: "·"
+              textFormat: Text.PlainText
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -1705,6 +1741,7 @@ Panel {
 
             Text {
               text: "·"
+              textFormat: Text.PlainText
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -1750,6 +1787,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               anchors.verticalCenter: parent.verticalCenter
               text: root.draggedHostName
               color: root.foreground
@@ -1764,18 +1802,29 @@ Panel {
 
   Process {
     id: statusProcess
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        root.processOutput = String(text || "")
-        if (root.processOutput !== "") root.storeSnapshot(root.fetchHost, root.processOutput)
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        root.processOutput += chunk
+        if (root.processOutput.length > root.maxBackendOutputChars) {
+          root.processOutput = ""
+          root.processError = "server-status output exceeded limit"
+          statusProcess.signal(15)
+          statusKillTimer.start()
+        }
       }
     }
-    stderr: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.processError = String(text || "").trim()
+    stderr: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        if (root.processError.length < root.maxBackendErrorChars)
+          root.processError += chunk
+      }
     }
     onExited: function(exitCode) {
+      statusKillTimer.stop()
+      root.processError = root.processError.trim()
+      if (root.processOutput !== "") root.storeSnapshot(root.fetchHost, root.processOutput)
       var completedHost = root.fetchHost
       Qt.callLater(function() {
         if (typeof root === "undefined" || !root || typeof root.finishStartupHost !== "function") return
@@ -1821,18 +1870,29 @@ Panel {
 
   Process {
     id: tailnetProcess
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        root.tailnetOutput = String(text || "")
-        if (root.tailnetOutput !== "") root.storeTailnet(root.tailnetOutput)
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        root.tailnetOutput += chunk
+        if (root.tailnetOutput.length > root.maxBackendOutputChars) {
+          root.tailnetOutput = ""
+          root.tailnetProcessError = "tailscale discovery output exceeded limit"
+          tailnetProcess.signal(15)
+          tailnetKillTimer.start()
+        }
       }
     }
-    stderr: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.tailnetProcessError = String(text || "").trim()
+    stderr: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        if (root.tailnetProcessError.length < root.maxBackendErrorChars)
+          root.tailnetProcessError += chunk
+      }
     }
     onExited: function(exitCode) {
+      tailnetKillTimer.stop()
+      root.tailnetProcessError = root.tailnetProcessError.trim()
+      if (root.tailnetOutput !== "") root.storeTailnet(root.tailnetOutput)
       root.tailnetRefreshing = false
       if (exitCode !== 0)
         root.tailnetError = root.tailnetProcessError || `tailscale discovery exited ${exitCode}`
@@ -1895,6 +1955,18 @@ Panel {
     }
   }
 
+  Timer {
+    id: statusKillTimer
+    interval: 2000
+    onTriggered: statusProcess.signal(9)
+  }
+
+  Timer {
+    id: tailnetKillTimer
+    interval: 2000
+    onTriggered: tailnetProcess.signal(9)
+  }
+
   component InfoField: Item {
     required property string label
     required property string value
@@ -1910,6 +1982,7 @@ Panel {
       spacing: Style.space(4)
 
       Text {
+        textFormat: Text.PlainText
         width: parent.width
         text: label
         color: root.dim
@@ -1920,6 +1993,7 @@ Panel {
       }
 
       Text {
+        textFormat: Text.PlainText
         width: parent.width
         text: value
         color: valueColor
@@ -1973,6 +2047,7 @@ Panel {
         }
 
         Text {
+          textFormat: Text.PlainText
           width: parent.width - metricPercent.implicitWidth - muteAction.implicitWidth - Style.space(25)
           text: root.displayMetricLabel(metricTile.metric)
           color: root.foreground
@@ -1983,6 +2058,7 @@ Panel {
         }
 
         Text {
+          textFormat: Text.PlainText
           id: metricPercent
           visible: metricTile.metric.value > 0
           text: Math.round(metricTile.metric.value * 100) + "%"
@@ -1993,6 +2069,7 @@ Panel {
         }
 
         Text {
+          textFormat: Text.PlainText
           id: muteAction
           visible: metricTile.canToggleMute
           text: metricTile.muted ? "MUTED" : "MUTE"
@@ -2004,6 +2081,7 @@ Panel {
       }
 
       Text {
+        textFormat: Text.PlainText
         width: parent.width
         text: root.displayMetricDetail(metricTile.metric)
         color: root.dim
@@ -2051,6 +2129,7 @@ Panel {
     required property string url
 
     text: label
+    textFormat: Text.PlainText
     color: linkHover.containsMouse ? Color.accent : root.dim
     font.family: root.fontFamily
     font.pixelSize: Style.font.caption
@@ -2103,6 +2182,7 @@ Panel {
         spacing: Style.space(3)
 
         Text {
+          textFormat: Text.PlainText
           Layout.fillWidth: true
           text: root.displayContainerName(containerTile.container)
           color: root.foreground
@@ -2113,6 +2193,7 @@ Panel {
         }
 
         Text {
+          textFormat: Text.PlainText
           Layout.fillWidth: true
           text: root.containerDetail(containerTile.container)
           color: root.dim
@@ -2123,6 +2204,7 @@ Panel {
       }
 
       Text {
+        textFormat: Text.PlainText
         visible: containerTile.canToggleMute || containerTile.container.memPercent !== null
         text: containerTile.muted ? "MUTED" : (containerTile.canToggleMute ? "MUTE" : Math.round(containerTile.container.memPercent) + "%")
         color: root.stateColor(containerTile.displayState)

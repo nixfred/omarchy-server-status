@@ -316,6 +316,21 @@ omarchy plugin validate .
 
 - The remote script is read-only; the plugin never mutates server state.
 - Snapshots exclude container environment variables by design.
+- **Remote strings are never rendered as markup.** Hostnames, DNS names,
+  container names, and SSH error text arrive from monitored hosts. Qt's default
+  `Text.AutoText` sniffs a string and renders anything markup-shaped as rich
+  text, which would let a hostname containing `<img src="http://…">` make the
+  shell process fetch a remote URL. Every `Text` in the panel pins
+  `textFormat: Text.PlainText`, and a test asserts the count of pinned elements
+  equals the count of elements so the invariant cannot quietly rot. Strings
+  bound for shell-owned sinks the plugin cannot pin — tooltips, the panel hero,
+  `notify-send` — are stripped of markup characters, C0/C1 and bidi controls,
+  and length-capped first.
+- **Remote output is bounded at the producer.** A host is read under an explicit
+  byte budget (1 MiB stdout, 16 KiB stderr for SSH; 4 MiB for `tailscale
+  status`), and an oversized stream kills the child and becomes a reported error
+  rather than memory pressure in the shell. Cardinality is capped too: 256
+  containers, 64 disks, 512 tailnet devices.
 - SSH runs with `BatchMode=yes`, so a host that would prompt for a password
   fails closed instead of hanging the panel.
 - The on-disk snapshot cache is `0600` and holds only sanitized data.

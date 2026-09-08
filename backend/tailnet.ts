@@ -1,6 +1,10 @@
+import { readBounded } from "./collect";
 import type { TailnetDevice, TailnetSnapshot } from "./model";
 
 const TAILSCALE_TIMEOUT_MS = 10_000;
+const MAX_TAILSCALE_STDOUT_BYTES = 4_194_304; // 4 MiB
+const MAX_TAILSCALE_STDERR_BYTES = 16_384;
+const MAX_DEVICES = 512;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -72,6 +76,8 @@ export function parseTailnetStatus(raw: string): TailnetSnapshot {
     ? peerValue
     : Object.values(record(peerValue));
   for (const peer of peers) {
+    // Cap before the sort so an oversized peer map never materializes fully.
+    if (devices.length >= MAX_DEVICES) break;
     const device = parseDevice(peer, false);
     if (device) devices.push(device);
   }
@@ -102,13 +108,13 @@ export async function collectTailnetSnapshot(): Promise<TailnetSnapshot> {
     process.kill();
   }, TAILSCALE_TIMEOUT_MS);
   const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(process.stdout).text(),
-    new Response(process.stderr).text(),
+    readBounded(process.stdout, MAX_TAILSCALE_STDOUT_BYTES, () => process.kill()),
+    readBounded(process.stderr, MAX_TAILSCALE_STDERR_BYTES, () => process.kill()),
     process.exited,
   ]);
   clearTimeout(timer);
 
-  if (timedOut || exitCode !== 0) {
+  if (timedOut || stdout.overflow || stderr.overflow || exitCode !== 0) {
     return {
       schemaVersion: 1,
       generatedAt: new Date().toISOString(),
@@ -116,12 +122,14 @@ export async function collectTailnetSnapshot(): Promise<TailnetSnapshot> {
       devices: [],
       error: timedOut
         ? "tailscale status timed out"
-        : stderr.trim().replace(/\s+/g, " ").slice(0, 240) || `tailscale exited ${exitCode}`,
+        : stdout.overflow || stderr.overflow
+          ? `tailscale status output exceeded ${MAX_TAILSCALE_STDOUT_BYTES} bytes`
+          : stderr.text.trim().replace(/\s+/g, " ").slice(0, 240) || `tailscale exited ${exitCode}`,
     };
   }
 
   try {
-    return parseTailnetStatus(stdout);
+    return parseTailnetStatus(stdout.text);
   } catch (error) {
     return {
       schemaVersion: 1,
