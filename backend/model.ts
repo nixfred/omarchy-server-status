@@ -23,6 +23,16 @@ export interface DiskMetrics {
   totalBytes: number;
   usedBytes: number;
   availBytes: number;
+  /** Filesystem source as df reports it, e.g. "/dev/mapper/root". */
+  source?: string;
+  /** Filesystem type, e.g. "btrfs" or "ext4". */
+  fstype?: string;
+  /**
+   * Other mount points backed by this same filesystem — btrfs subvolumes,
+   * bind mounts. They share one allocation pool, so they are reported as one
+   * disk rather than several identical ones.
+   */
+  sharedMounts?: string[];
 }
 
 export interface ContainerMetrics {
