@@ -432,7 +432,8 @@ Panel {
   }
 
   function containerWarningId(container) {
-    return "container-" + String(container && container.name || "")
+    var runtime = String(container && container.runtime || "docker")
+    return "container-" + runtime + "-" + String(container && container.name || "")
   }
 
   function copyText(value) {
@@ -742,12 +743,14 @@ Panel {
       return "pass"
     }
     if (container.state === "restarting") return "fail"
+    if (container.state === "paused") return "warn"
     if (container.state === "exited" || container.state === "dead") return "warn"
     return "unknown"
   }
 
   function containerDetail(container) {
     var parts = []
+    if (container.runtime) parts.push(String(container.runtime))
     if (container.cpuPercent !== null) parts.push("cpu " + container.cpuPercent.toFixed(1) + "%")
     if (container.memPercent !== null)
       parts.push("mem " + formatBytes(container.memUsageBytes) + " (" + container.memPercent.toFixed(0) + "%)")
@@ -755,6 +758,19 @@ Panel {
     if (container.health !== "none") parts.push(container.health)
     else parts.push(container.state)
     return parts.join(" · ")
+  }
+
+  function workloadHeader() {
+    var list = root.containers
+    var kvm = 0
+    var other = 0
+    for (var i = 0; i < list.length; i += 1) {
+      if (String(list[i] && list[i].runtime || "") === "kvm") kvm += 1
+      else other += 1
+    }
+    if (kvm > 0 && other > 0) return "CONTAINERS · " + other + " · VMS · " + kvm
+    if (kvm > 0) return "VMS · " + kvm
+    return "CONTAINERS · " + list.length
   }
 
   function summaryFor(hostAlias) {
@@ -1648,7 +1664,7 @@ Panel {
             visible: !root.pickerOpen && root.activeDevice && root.containers.length > 0
 
             PanelSectionHeader {
-              text: `CONTAINERS · ${root.containers.length}`
+              text: root.workloadHeader()
               foreground: root.foreground
               fontFamily: root.fontFamily
             }

@@ -42,14 +42,12 @@ export async function readBounded(
 }
 
 /**
- * One read-only remote script per refresh. Container calls prefer
- * `sudo -n docker` (operator accounts deliberately outside the docker
- * group), then plain `docker`, then the same pair for `podman` (rootless
- * and rootful). A host with none of those simply yields empty container
- * sections. `inspect` uses a narrow format string on purpose —
- * full inspect JSON would leak container environment variables (secrets)
- * into the snapshot. Section names stay `DOCKER_*` so existing parsers
- * and the snapshot cache keep working.
+ * One read-only remote script per refresh. Docker and Podman are probed
+ * independently so a host running both engines reports both sets. If the
+ * docker CLI is actually talking to Podman, the docker pass is dropped to
+ * avoid listing the same containers twice. KVM/libvirt domains come from
+ * `virsh` on qemu:///system and qemu:///session. `inspect` / `dominfo` stay
+ * narrow so environment variables and domain XML never leave the host.
  */
 export const REMOTE_SCRIPT = `
 set -o pipefail
@@ -64,20 +62,65 @@ echo "@@DISK@@"
 df -B1 --output=source,fstype,target,size,used,avail -x tmpfs -x devtmpfs -x overlay -x squashfs -x iso9660 2>/dev/null | tail -n +2
 echo "@@NET@@"
 tail -n +3 /proc/net/dev
-if sudo -n docker version >/dev/null 2>&1; then CTR="sudo -n docker"
-elif docker version >/dev/null 2>&1; then CTR="docker"
-elif sudo -n podman version >/dev/null 2>&1; then CTR="sudo -n podman"
-elif podman version >/dev/null 2>&1; then CTR="podman"
-else CTR=""; fi
-echo "@@DOCKER_PS@@"
-[ -n "$CTR" ] && $CTR ps --all --format "{{json .}}" 2>/dev/null || true
-echo "@@DOCKER_STATS@@"
-[ -n "$CTR" ] && $CTR stats --no-stream --format "{{json .}}" 2>/dev/null || true
-echo "@@DOCKER_INSPECT@@"
-ids=$([ -n "$CTR" ] && $CTR ps -aq 2>/dev/null || true)
-if [ -n "$ids" ]; then
-  $CTR inspect --format '{"Name":{{json .Name}},"Restarts":{{.RestartCount}},"StartedAt":{{json .State.StartedAt}},"Status":{{json .State.Status}},"OOM":{{.State.OOMKilled}},"Health":{{if .State.Health}}{{json .State.Health.Status}}{{else}}"none"{{end}}}' $ids 2>/dev/null || true
+dump_engine() {
+  bin="$1"
+  prefix="$2"
+  echo "@@"\${prefix}"_PS@@"
+  [ -n "$bin" ] && $bin ps --all --format "{{json .}}" 2>/dev/null || true
+  echo "@@"\${prefix}"_STATS@@"
+  [ -n "$bin" ] && $bin stats --no-stream --format "{{json .}}" 2>/dev/null || true
+  echo "@@"\${prefix}"_INSPECT@@"
+  ids=$([ -n "$bin" ] && $bin ps -aq 2>/dev/null || true)
+  if [ -n "$ids" ]; then
+    $bin inspect --format '{"Name":{{json .Name}},"Restarts":{{.RestartCount}},"StartedAt":{{json .State.StartedAt}},"Status":{{json .State.Status}},"OOM":{{.State.OOMKilled}},"Health":{{if .State.Health}}{{json .State.Health.Status}}{{else}}"none"{{end}}}' $ids 2>/dev/null || true
+  fi
+}
+if sudo -n docker version >/dev/null 2>&1; then DOCKER="sudo -n docker"
+elif docker version >/dev/null 2>&1; then DOCKER="docker"
+else DOCKER=""; fi
+if sudo -n podman version >/dev/null 2>&1; then PODMAN="sudo -n podman"
+elif podman version >/dev/null 2>&1; then PODMAN="podman"
+else PODMAN=""; fi
+if [ -n "$DOCKER" ] && $DOCKER info 2>/dev/null | grep -qi podman; then
+  [ -n "$PODMAN" ] || PODMAN="$DOCKER"
+  DOCKER=""
 fi
+dump_engine "$DOCKER" DOCKER
+dump_engine "$PODMAN" PODMAN
+json_escape() { printf '%s' "$1" | sed 's/\\\\/\\\\\\\\/g; s/"/\\\\"/g'; }
+dump_kvm_uri() {
+  bin="$1"
+  uri="$2"
+  [ -n "$bin" ] || return 0
+  names=$($bin -c "$uri" list --all --name 2>/dev/null) || return 0
+  count=0
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    count=$((count + 1))
+    [ "$count" -le 64 ] || break
+    info=$($bin -c "$uri" dominfo "$name" 2>/dev/null) || continue
+    state=$(printf '%s\\n' "$info" | awk -F': *' '/^State:/{print $2; exit}')
+    cpus=$(printf '%s\\n' "$info" | awk -F': *' '/^CPU\\(s\\):/{print $2; exit}')
+    maxm=$(printf '%s\\n' "$info" | awk '/^Max memory:/{print $3; exit}')
+    used=$(printf '%s\\n' "$info" | awk '/^Used memory:/{print $3; exit}')
+    [ -n "$cpus" ] || cpus=0
+    [ -n "$maxm" ] || maxm=0
+    [ -n "$used" ] || used=0
+    printf '{"Name":"%s","State":"%s","Cpus":%s,"MaxMemKib":%s,"UsedMemKib":%s,"Uri":"%s"}\\n' \\
+      "$(json_escape "$name")" "$(json_escape "$state")" "$cpus" "$maxm" "$used" "$(json_escape "$uri")"
+  done <<KVM_NAMES
+$names
+KVM_NAMES
+}
+pick_virsh() {
+  uri="$1"
+  if sudo -n virsh -c "$uri" list >/dev/null 2>&1; then echo "sudo -n virsh"
+  elif virsh -c "$uri" list >/dev/null 2>&1; then echo "virsh"
+  else echo ""; fi
+}
+echo "@@KVM@@"
+dump_kvm_uri "$(pick_virsh qemu:///system)" qemu:///system
+dump_kvm_uri "$(pick_virsh qemu:///session)" qemu:///session
 echo "@@END@@"
 `;
 
@@ -391,17 +434,21 @@ interface InspectRow {
   Health?: string;
 }
 
-export function parseContainers(sections: Map<string, string[]>): ContainerMetrics[] {
-  const ps = parseJsonLines<PsRow>(sections.get("DOCKER_PS") || []);
-  const stats = parseJsonLines<StatsRow>(sections.get("DOCKER_STATS") || []);
-  const inspect = parseJsonLines<InspectRow>(sections.get("DOCKER_INSPECT") || []);
+function parseEngine(
+  sections: Map<string, string[]>,
+  prefix: string,
+  runtime: "docker" | "podman",
+): ContainerMetrics[] {
+  const ps = parseJsonLines<PsRow>(sections.get(`${prefix}_PS`) || []);
+  const stats = parseJsonLines<StatsRow>(sections.get(`${prefix}_STATS`) || []);
+  const inspect = parseJsonLines<InspectRow>(sections.get(`${prefix}_INSPECT`) || []);
 
   const statsByName = new Map(stats.map((row) => [String(row.Name || ""), row]));
   const inspectByName = new Map(
     inspect.map((row) => [String(row.Name || "").replace(/^\//, ""), row]),
   );
 
-  return ps.slice(0, MAX_CONTAINERS).map((row) => {
+  return ps.map((row) => {
     const name = psName(row);
     const stat = statsByName.get(name);
     const info = inspectByName.get(name);
@@ -409,6 +456,7 @@ export function parseContainers(sections: Map<string, string[]>): ContainerMetri
 
     return {
       name,
+      runtime,
       image: String(row.Image || ""),
       status: String(row.Status || row.State || ""),
       state: String(info?.Status || row.State || ""),
@@ -425,6 +473,72 @@ export function parseContainers(sections: Map<string, string[]>): ContainerMetri
       pids: stat?.PIDs != null && stat.PIDs !== "" ? Number(stat.PIDs) : null,
     };
   });
+}
+
+interface KvmRow {
+  Name?: string;
+  State?: string;
+  Cpus?: number | string;
+  MaxMemKib?: number | string;
+  UsedMemKib?: number | string;
+  Uri?: string;
+}
+
+function kvmState(raw: string): string {
+  const state = raw.toLowerCase().replace(/\s+/g, " ").trim();
+  if (state === "running") return "running";
+  if (state === "paused" || state === "pmsuspended") return "paused";
+  if (state === "shut off" || state === "shutoff") return "exited";
+  if (state === "crashed" || state === "dying") return "dead";
+  return state || "unknown";
+}
+
+function parseKvm(sections: Map<string, string[]>): ContainerMetrics[] {
+  const seen = new Set<string>();
+  const rows: ContainerMetrics[] = [];
+  for (const row of parseJsonLines<KvmRow>(sections.get("KVM") || [])) {
+    const name = String(row.Name || "").trim();
+    if (!name) continue;
+    const uri = String(row.Uri || "");
+    const key = `${uri}::${name}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const usedKib = Number(row.UsedMemKib);
+    const maxKib = Number(row.MaxMemKib);
+    const usage = Number.isFinite(usedKib) ? Math.round(usedKib * 1024) : null;
+    const limit = Number.isFinite(maxKib) ? Math.round(maxKib * 1024) : null;
+    const state = kvmState(String(row.State || ""));
+    rows.push({
+      name,
+      runtime: "kvm",
+      image: uri ? `kvm ${uri}` : "kvm",
+      status: String(row.State || state),
+      state,
+      health: "none",
+      restarts: 0,
+      startedAt: "",
+      oomKilled: false,
+      cpuPercent: null,
+      memUsageBytes: usage,
+      memLimitBytes: limit,
+      memPercent:
+        usage !== null && limit !== null && limit > 0
+          ? Math.round((usage / limit) * 1000) / 10
+          : null,
+      netIo: "",
+      blockIo: "",
+      pids: null,
+    });
+  }
+  return rows;
+}
+
+export function parseContainers(sections: Map<string, string[]>): ContainerMetrics[] {
+  return [
+    ...parseEngine(sections, "DOCKER", "docker"),
+    ...parseEngine(sections, "PODMAN", "podman"),
+    ...parseKvm(sections),
+  ].slice(0, MAX_CONTAINERS);
 }
 
 export async function collectSnapshot(sshHost: string): Promise<ServerSnapshot> {

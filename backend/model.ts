@@ -38,6 +38,8 @@ export interface DiskMetrics {
 
 export interface ContainerMetrics {
   name: string;
+  /** docker, podman, or kvm. Absent on snapshots cached before dual-runtime collection. */
+  runtime?: "docker" | "podman" | "kvm";
   image: string;
   status: string;
   state: string;

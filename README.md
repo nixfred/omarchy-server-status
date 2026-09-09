@@ -54,12 +54,15 @@ Agentless, and not in the marketing sense: every Linux telemetry refresh is
 running on your servers. Remove the plugin and there is nothing to clean up
 remotely, because nothing was ever put there.
 
-The remote script reads `/proc`, `free`, and `df` for host metrics, and
-`docker` or `podman` `ps / stats / inspect` for containers (Docker first, then
-Podman, including rootless). Hosts without either simply show host metrics —
-the containers column appears only when containers exist.
-`inspect` deliberately uses a narrow format string: full inspect output
-would leak container environment variables (secrets) into the snapshot.
+The remote script reads `/proc`, `free`, and `df` for host metrics, then
+collects **Docker and Podman independently** (`ps / stats / inspect`, including
+rootless Podman) so a host running both engines shows both sets. If the
+`docker` CLI is actually Podman, that pass is skipped so the same containers
+are not listed twice. **KVM/libvirt** domains come from read-only `virsh
+dominfo` on `qemu:///system` and `qemu:///session`. Hosts with none of those
+simply show host metrics — the containers column appears only when something
+exists. `inspect` / `dominfo` stay narrow: full inspect JSON and domain XML
+would leak secrets into the snapshot.
 
 ## What it looks like
 
@@ -76,7 +79,8 @@ sharing. Toggle it off and these are your real nodes.*
   **5-minute** average — see [the observer effect](#the-observer-effect-load-spikes-caused-by-monitoring-itself));
   read-only ISO media is ignored because a full optical image is not
   actionable capacity
-- **Containers** — compact three-column cards show health, CPU%, memory versus its
+- **Containers and VMs** — compact three-column cards show Docker, Podman, and
+  KVM/libvirt guests together (runtime on the detail line), with health, CPU%, memory versus its
   limit, restart count; unhealthy, restarting, or OOM-killed turns red
 - **One card per filesystem, not per mount** — btrfs subvolumes and bind mounts
   share a single allocation pool and `df` reports identical figures for each, so
@@ -127,8 +131,10 @@ sharing. Toggle it off and these are your real nodes.*
 - Passwordless SSH to each server (key-based; the backend runs with
   `BatchMode=yes`, so password prompts fail closed)
 - For container metrics, the remote account needs `sudo -n docker` or
-  membership in the `docker` group, **or** a working `podman` for that
-  same account (rootless user Podman is enough); host metrics work without either
+  membership in the `docker` group, and/or a working `podman` for that
+  same account (rootless user Podman is enough). For KVM VMs, `virsh` must
+  work as that user (`qemu:///session`) or via `sudo -n virsh` (`qemu:///system`).
+  Host metrics work without any of those.
 
 ## Install
 

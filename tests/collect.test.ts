@@ -56,10 +56,15 @@ describe("SSH command construction", () => {
     expect(REMOTE_SCRIPT).toContain("-x iso9660");
   });
 
-  test("falls back to podman when docker is not available", () => {
-    expect(REMOTE_SCRIPT).toContain("podman version");
-    expect(REMOTE_SCRIPT).toContain("CTR=\"podman\"");
+  test("collects docker and podman independently and lists libvirt domains", () => {
     expect(REMOTE_SCRIPT).toContain("sudo -n docker version");
+    expect(REMOTE_SCRIPT).toContain("sudo -n podman version");
+    expect(REMOTE_SCRIPT).toContain("dump_engine \"$DOCKER\" DOCKER");
+    expect(REMOTE_SCRIPT).toContain("dump_engine \"$PODMAN\" PODMAN");
+    expect(REMOTE_SCRIPT).toContain("grep -qi podman");
+    expect(REMOTE_SCRIPT).toContain("@@KVM@@");
+    expect(REMOTE_SCRIPT).toContain("qemu:///system");
+    expect(REMOTE_SCRIPT).toContain("qemu:///session");
   });
 });
 
@@ -127,6 +132,7 @@ describe("parseContainers", () => {
     expect(web?.memPercent).toBe(31.3);
     const redis = containers.find((c) => c.name === "redis-1");
     expect(redis?.restarts).toBe(2);
+    expect(web?.runtime).toBe("docker");
   });
 });
 
@@ -142,13 +148,13 @@ Swap:     1 0 1
 /dev/sda1 ext4 / 1 1 1
 @@NET@@
     lo: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
-@@DOCKER_PS@@
+@@PODMAN_PS@@
 {"Names":["openclaw"],"Image":"ghcr.io/openclaw/openclaw:latest","Status":"","State":"running"}
 {"Names":["hermes"],"Image":"docker.io/nousresearch/hermes-agent:latest","Status":"","State":"running"}
-@@DOCKER_STATS@@
+@@PODMAN_STATS@@
 {"Name":"openclaw","CPU":1.95,"MemUsage":600338432,"MemLimit":4294967296,"MemPerc":13.97,"PIDs":13}
 {"Name":"hermes","CPU":2.24,"MemUsage":440020992,"MemLimit":4294967296,"MemPerc":10.25,"PIDs":39}
-@@DOCKER_INSPECT@@
+@@PODMAN_INSPECT@@
 {"Name":"openclaw","Restarts":0,"StartedAt":"2026-09-09T09:55:09Z","Status":"running","OOM":false,"Health":"none"}
 {"Name":"hermes","Restarts":1,"StartedAt":"2026-09-09T09:55:10Z","Status":"running","OOM":false,"Health":"none"}
 @@END@@
@@ -169,6 +175,61 @@ describe("parseContainers podman JSON", () => {
     const hermes = containers.find((c) => c.name === "hermes");
     expect(hermes?.restarts).toBe(1);
     expect(hermes?.cpuPercent).toBe(2.2);
+    expect(openclaw?.runtime).toBe("podman");
+  });
+});
+
+const BOTH_AND_KVM_SAMPLE = `@@HOST@@
+lab
+2
+0 0 0 1/1 1
+1 0
+@@MEM@@
+Mem: 1 1 1 1 1 1
+Swap: 1 0 1
+@@DISK@@
+/dev/sda1 ext4 / 1 1 1
+@@NET@@
+    lo: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+@@DOCKER_PS@@
+{"Names":"web-1","Image":"example/web:1","Status":"Up","State":"running"}
+@@DOCKER_STATS@@
+{"Name":"web-1","CPUPerc":"1.00%","MemUsage":"10MiB / 100MiB","MemPerc":"10.00%","PIDs":"2"}
+@@DOCKER_INSPECT@@
+{"Name":"/web-1","Restarts":0,"StartedAt":"2026-09-09T00:00:00Z","Status":"running","OOM":false,"Health":"none"}
+@@PODMAN_PS@@
+{"Names":["openclaw"],"Image":"ghcr.io/openclaw/openclaw:latest","Status":"","State":"running"}
+@@PODMAN_STATS@@
+{"Name":"openclaw","CPU":1.5,"MemUsage":1000,"MemLimit":2000,"MemPerc":50,"PIDs":3}
+@@PODMAN_INSPECT@@
+{"Name":"openclaw","Restarts":0,"StartedAt":"2026-09-09T00:00:00Z","Status":"running","OOM":false,"Health":"none"}
+@@KVM@@
+{"Name":"win10","State":"running","Cpus":4,"MaxMemKib":8388608,"UsedMemKib":4194304,"Uri":"qemu:///system"}
+{"Name":"debian","State":"shut off","Cpus":2,"MaxMemKib":2097152,"UsedMemKib":0,"Uri":"qemu:///session"}
+@@END@@
+`;
+
+describe("parseContainers mixed docker, podman, and kvm", () => {
+  const containers = parseContainers(splitSections(BOTH_AND_KVM_SAMPLE));
+
+  test("keeps docker and podman rows instead of picking one engine", () => {
+    expect(containers.map((c) => `${c.runtime}:${c.name}`).sort()).toEqual([
+      "docker:web-1",
+      "kvm:debian",
+      "kvm:win10",
+      "podman:openclaw",
+    ]);
+  });
+
+  test("maps libvirt domains onto the same card model", () => {
+    const win = containers.find((c) => c.name === "win10");
+    expect(win?.runtime).toBe("kvm");
+    expect(win?.state).toBe("running");
+    expect(win?.memUsageBytes).toBe(4194304 * 1024);
+    expect(win?.memLimitBytes).toBe(8388608 * 1024);
+    expect(win?.memPercent).toBe(50);
+    const debian = containers.find((c) => c.name === "debian");
+    expect(debian?.state).toBe("exited");
   });
 });
 
