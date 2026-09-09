@@ -5,6 +5,7 @@ import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
+import "ThemePalette.js" as ThemePalette
 
 Panel {
   id: root
@@ -15,7 +16,7 @@ Panel {
   // Kept in step with manifest.json by a test, rather than read from disk at
   // runtime: the panel should not gain a file read and a failure mode just to
   // print its own version.
-  readonly property string pluginVersion: "0.7.0"
+  readonly property string pluginVersion: "0.8.0"
   readonly property string pluginName: "Tailscale Host Monitor"
   readonly property string repoUrl: "https://github.com/nixfred/omarchy-server-status"
   readonly property string authorUrl: "https://nixfred.com"
@@ -88,6 +89,22 @@ Panel {
   readonly property string backendPath: decodeURIComponent(
     String(Qt.resolvedUrl("backend/server-status.ts")).replace(/^file:\/\//, ""))
   readonly property string selectionPath: Quickshell.env("HOME") + "/.config/omarchy/server-status.json"
+  readonly property string themeColorsPath:
+    Quickshell.env("HOME") + "/.local/state/omarchy/current/theme/colors.toml"
+
+  // Raw colors.toml contents, reloaded on theme change and on panel open.
+  property var themeColorValues: ({})
+
+  // Built-in traffic lights, used when a theme's own palette cannot carry the
+  // meaning. See ThemePalette.js for what disqualifies one.
+  readonly property var fallbackStatusColors: ({
+    pass: "#69c58a",
+    warn: "#e5b45d",
+    fail: "#e66a6a"
+  })
+
+  readonly property var statusColors: ThemePalette.statusPalette(
+    themeColorValues, fallbackStatusColors, String(Color.background))
   readonly property string snapshotCachePath: {
     var configured = String(Quickshell.env("XDG_CACHE_HOME") || "").trim()
     var directory = configured !== "" ? configured : Quickshell.env("HOME") + "/.cache"
@@ -556,10 +573,10 @@ Panel {
   }
 
   function stateColor(state) {
-    if (state === "pass") return "#69c58a"
+    if (state === "pass") return statusColors.pass
     if (state === "running") return Color.accent
-    if (state === "warn") return "#e5b45d"
-    if (state === "fail") return "#e66a6a"
+    if (state === "warn") return statusColors.warn
+    if (state === "fail") return statusColors.fail
     if (state === "muted") return root.dim
     return root.dim
   }
@@ -1085,6 +1102,10 @@ Panel {
   }
 
   onOpenedChanged: if (opened) {
+    // The shell's Color singleton reads colors.toml once and relies on an IPC
+    // push for theme switches, which this plugin does not receive, so reload
+    // here as well as on the file watch.
+    themeColorsFile.reload()
     refreshTailnetIfStale()
     refreshSelectedHost(false)
   }
@@ -1422,7 +1443,7 @@ Panel {
                       textFormat: Text.PlainText
                       anchors.verticalCenter: parent.verticalCenter
                       text: root.osIcon(modelData.os)
-                      color: modelData.online ? "#69c58a" : root.dim
+                      color: modelData.online ? root.stateColor("pass") : root.dim
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.bodySmall
                     }
@@ -1535,7 +1556,7 @@ Panel {
                 Layout.preferredWidth: Style.space(135)
                 label: "STATUS"
                 value: root.activeDevice && root.activeDevice.online ? "Online" : "Offline"
-                valueColor: root.activeDevice && root.activeDevice.online ? "#69c58a" : root.urgent
+                valueColor: root.activeDevice && root.activeDevice.online ? root.stateColor("pass") : root.urgent
               }
 
               InfoField {
@@ -1564,7 +1585,7 @@ Panel {
                 Layout.preferredWidth: Style.space(125)
                 label: "HOST ALERTS · CLICK"
                 value: root.isHostMuted(root.activeHost) ? "Muted" : "Active"
-                valueColor: root.isHostMuted(root.activeHost) ? root.dim : "#69c58a"
+                valueColor: root.isHostMuted(root.activeHost) ? root.dim : root.stateColor("pass")
                 clickable: root.activeHost !== ""
                 onActivated: root.toggleHostMute(root.activeHost)
               }
@@ -1857,6 +1878,16 @@ Panel {
     onLoaded: root.loadSelection(text())
     onLoadFailed: root.loadSelection("")
     onFileChanged: reload()
+  }
+
+  FileView {
+    id: themeColorsFile
+    path: root.themeColorsPath
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.themeColorValues = ThemePalette.parseColorsToml(text())
+    onLoadFailed: root.themeColorValues = ({})
   }
 
   FileView {

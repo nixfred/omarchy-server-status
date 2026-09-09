@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import {
   REMOTE_SCRIPT,
   groupDisksBySource,
@@ -276,6 +276,25 @@ describe("Panel.qml delayed callbacks", () => {
     expect(openUrl).toContain("root.close()");
   });
 
+  test("keeps no hardcoded status colours outside the documented fallback", () => {
+    // The only literal colours left should be the three fallback values; every
+    // other colour is derived from the theme.
+    const literals = panel.match(/#[0-9a-fA-F]{6}/g) || [];
+    expect(literals.sort()).toEqual(["#69c58a", "#e5b45d", "#e66a6a"]);
+    const stateColor = panel.match(/function stateColor\([^)]*\)\s*\{[\s\S]*?\n  \}/)?.[0] || "";
+    expect(stateColor).toContain("statusColors.pass");
+    expect(stateColor).toContain("statusColors.warn");
+    expect(stateColor).toContain("statusColors.fail");
+    expect(stateColor).not.toMatch(/#[0-9a-fA-F]{6}/);
+  });
+
+  test("reloads the theme palette on change and on panel open", () => {
+    expect(panel).toContain("watchChanges: true");
+    expect(panel).toContain("onFileChanged: reload()");
+    expect(panel).toContain("themeColorsFile.reload()");
+    expect(panel).toContain('import "ThemePalette.js" as ThemePalette');
+  });
+
   test("contains no Hyprland workspace-switch launch path", () => {
     expect(panel).not.toContain("launchInNewWorkspace");
     expect(panel).not.toContain("workspaceProcess");
@@ -459,5 +478,97 @@ describe("Panel.qml rendering sinks", () => {
     expect(panel).not.toContain("StdioCollector");
     expect((panel.match(/splitMarker: ""/g) || []).length).toBe(4);
     expect(panel).toContain("maxBackendOutputChars");
+  });
+});
+
+describe("theme status palette", () => {
+  // ThemePalette.js is plain JS with no .pragma or .import so both Panel.qml
+  // and this suite can load it; evaluate it here to get at its functions.
+  const source = readFileSync(new URL("../ThemePalette.js", import.meta.url), "utf8");
+  const { parseColorsToml, statusPalette } = new Function(
+    source + "; return { parseColorsToml, statusPalette };")();
+
+  const FALLBACK = { pass: "#69c58a", warn: "#e5b45d", fail: "#e66a6a" };
+  const resolve = (toml: string, background = "#101315") =>
+    statusPalette(parseColorsToml(toml), FALLBACK, background);
+
+  test("adopts a theme whose palette reads as a traffic light", () => {
+    const result = resolve('green = "#9ece6a"\nyellow = "#e0af68"\nred = "#f7768e"');
+    expect(result.themed).toBe(true);
+    expect(result.pass).toBe("#9ece6a");
+    expect(result.warn).toBe("#e0af68");
+    expect(result.fail).toBe("#f7768e");
+  });
+
+  test("rejects a theme whose red is green", () => {
+    // hackerman: red = #50f872. Adopting it would render a critical host as
+    // healthy, which is the exact failure this guard exists to prevent.
+    const result = resolve('green = "#4fe88f"\nyellow = "#50f7d4"\nred = "#50f872"');
+    expect(result.themed).toBe(false);
+    expect(result.fail).toBe(FALLBACK.fail);
+  });
+
+  test("rejects a theme that swaps green and yellow", () => {
+    // matte-black: green = #FFC107 (amber), yellow = #b91c1c (red).
+    const result = resolve('green = "#FFC107"\nyellow = "#b91c1c"\nred = "#D35F5F"');
+    expect(result.themed).toBe(false);
+  });
+
+  test("rejects an all-grey palette", () => {
+    const result = resolve('green = "#b6b6b6"\nyellow = "#cecece"\nred = "#a4a4a4"');
+    expect(result.themed).toBe(false);
+    expect(result.reason).toContain("desaturated");
+  });
+
+  test("rejects three colours too close to tell apart", () => {
+    // pass and warn both land in the 60-70 degree overlap of their hue bands
+    // and are near-identical, so only the separation check can catch them.
+    const result = resolve('green = "#b8bf5a"\nyellow = "#babf5c"\nred = "#ea6962"');
+    expect(result.themed).toBe(false);
+    expect(result.reason).toContain("too close");
+  });
+
+  test("keeps muted but genuine greens", () => {
+    // ethereal's sage sits at 0.10 saturation and is perfectly legible next to
+    // its amber and red; an aggressive saturation floor wrongly rejected it.
+    const result = resolve('green = "#92a593"\nyellow = "#E9BB4F"\nred = "#ED5B5A"');
+    expect(result.themed).toBe(true);
+    expect(result.pass).toBe("#92a593");
+  });
+
+  test("falls back when a status colour would vanish into the background", () => {
+    const result = resolve(
+      'green = "#9ece6a"\nyellow = "#e0af68"\nred = "#f7768e"', "#9ece6a");
+    expect(result.themed).toBe(false);
+    expect(result.reason).toContain("background");
+  });
+
+  test("accepts ANSI colour names when a theme omits the friendly ones", () => {
+    const result = resolve('color2 = "#9ece6a"\ncolor3 = "#e0af68"\ncolor1 = "#f7768e"');
+    expect(result.themed).toBe(true);
+    expect(result.pass).toBe("#9ece6a");
+  });
+
+  test("falls back cleanly on an empty or unreadable theme file", () => {
+    const result = resolve("");
+    expect(result.themed).toBe(false);
+    expect(result).toMatchObject(FALLBACK);
+  });
+
+  test("every installed theme resolves to a legible triple", () => {
+    // Guards against a future threshold change quietly breaking a real theme.
+    const dir = "/usr/share/omarchy/themes";
+    let checked = 0;
+    for (const name of readdirSync(dir)) {
+      let raw = "";
+      try { raw = readFileSync(`${dir}/${name}/colors.toml`, "utf8"); } catch { continue; }
+      const values = parseColorsToml(raw);
+      const result = statusPalette(values, FALLBACK, values.background || "#101315");
+      checked += 1;
+      // Whatever the decision, the three roles must always be distinct.
+      expect(new Set([result.pass, result.warn, result.fail]).size).toBe(3);
+      expect(result.reason).not.toBe("");
+    }
+    expect(checked).toBeGreaterThan(0);
   });
 });

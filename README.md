@@ -111,6 +111,15 @@ sharing. Toggle it off and these are your real nodes.*
   immediately after a shell/plugin reload and remain visible during refresh
 - **Desktop notifications** — `notify-send` on threshold breaches, container
   failures, unreachable hosts, and recoveries
+- **Theme-aware status colours** — the traffic lights follow the active Omarchy
+  theme's own green, yellow, and red, alongside the foreground, accent, and
+  border colours the panel already derived from it. The theme palette is
+  measured before it is trusted: a theme whose colours are mutually
+  indistinguishable, too close to the panel background, or outside the hue range
+  that reads as their role keeps the built-in triple instead. Some real themes
+  need this — hackerman defines red as `#50f872`, which is green, and
+  matte-black defines green as amber and yellow as red, so adopting either
+  verbatim would report a failing host as healthy
 - **Privacy mode** — mask hostnames, addresses, DNS names, container names, and
   remote error text for screenshots and screen sharing, with zero effect on
   what is collected or how health is judged
@@ -311,6 +320,27 @@ evidence from a 4-vCPU Azure VM.
 bun run check              # tests + build
 omarchy plugin validate .
 ```
+
+## Theming
+
+Colours come from the active theme wherever a theme can supply them. Chrome —
+text, dim text, borders, tile fills, the accent — reads from the shell's `Color`
+singleton and follows a theme switch immediately.
+
+Status colours are the exception, because they carry meaning rather than style.
+The shell's `Color` singleton parses the theme's `colors.toml` but keeps only
+`foreground`, `background`, `accent`, `muted`, and `urgent`; `green` and
+`yellow` are read and discarded. The panel therefore reads `colors.toml`
+directly, watches it for changes, and re-reads it when the popup opens.
+
+Every theme palette is checked before it is used. A theme keeps its own colours
+when the three are distinguishable from each other and from the background, are
+not effectively grey, and each sits in the hue range that reads as its role.
+Otherwise the built-in `#69c58a` / `#e5b45d` / `#e66a6a` triple stands in. Of
+the themes shipped with Omarchy, most pass; the ones that do not are rejected
+for concrete reasons, such as hackerman defining red as a green or lumon giving
+three near-identical blues. `ThemePalette.js` holds the logic and the tests
+exercise it against every theme installed on the machine.
 
 ## Security notes
 
