@@ -26,7 +26,7 @@ cat /proc/uptime
 echo "@@MEM@@"
 free -b | sed -n "2p;3p"
 echo "@@DISK@@"
-df -B1 --output=target,size,used,avail -x tmpfs -x devtmpfs -x overlay -x squashfs 2>/dev/null | tail -n +2
+df -B1 --output=source,fstype,target,size,used,avail -x tmpfs -x devtmpfs -x overlay -x squashfs 2>/dev/null | tail -n +2
 echo "@@NET@@"
 tail -n +3 /proc/net/dev
 if sudo -n docker version >/dev/null 2>&1; then DOCKER="sudo -n docker"; elif docker version >/dev/null 2>&1; then DOCKER="docker"; else DOCKER=""; fi
@@ -119,6 +119,101 @@ export function parseSize(value: string): number | null {
   return factor === undefined ? null : Math.round(Number(match[1]) * factor);
 }
 
+interface DiskRow {
+  source: string;
+  fstype: string;
+  mount: string;
+  totalBytes: number;
+  usedBytes: number;
+  availBytes: number;
+}
+
+/**
+ * df rows are `source fstype target size used avail`. Parse from both ends:
+ * the three counters are always last and the source is always first, so a
+ * mount point containing spaces stays intact instead of shifting every column.
+ */
+export function parseDiskRows(lines: string[]): DiskRow[] {
+  const rows: DiskRow[] = [];
+  for (const line of lines) {
+    const parts = line.trim().split(/\s+/);
+    if (parts.length < 6) continue;
+
+    const totalBytes = Number(parts[parts.length - 3]);
+    const usedBytes = Number(parts[parts.length - 2]);
+    const availBytes = Number(parts[parts.length - 1]);
+    if (!Number.isFinite(totalBytes) || !Number.isFinite(usedBytes) || !Number.isFinite(availBytes))
+      continue;
+
+    const mount = parts.slice(2, parts.length - 3).join(" ");
+    if (!mount.startsWith("/")) continue;
+
+    // Drop pseudo filesystems (e.g. Tencent Lighthouse COS mounts report
+    // hundreds of TB); anything above 50 TiB is not a local disk here.
+    if (totalBytes <= 0 || totalBytes >= 50 * 1024 ** 4) continue;
+
+    rows.push({ source: parts[0], fstype: parts[1], mount, totalBytes, usedBytes, availBytes });
+  }
+  return rows;
+}
+
+/** Prefer `/`, then the shallowest path, so a group's primary mount is stable. */
+function compareMountPriority(a: DiskRow, b: DiskRow): number {
+  const aRoot = a.mount === "/";
+  const bRoot = b.mount === "/";
+  if (aRoot !== bRoot) return aRoot ? -1 : 1;
+
+  const depth = (mount: string) => mount.split("/").filter(Boolean).length;
+  const byDepth = depth(a.mount) - depth(b.mount);
+  if (byDepth !== 0) return byDepth;
+  if (a.mount.length !== b.mount.length) return a.mount.length - b.mount.length;
+  return a.mount.localeCompare(b.mount);
+}
+
+/**
+ * btrfs subvolumes, bind mounts, and anything else mounted more than once all
+ * share a single allocation pool, and df reports the same capacity for each of
+ * them. Listing them separately means one filesystem crossing a threshold
+ * raises the identical warning several times over, which also skews the host
+ * colour and the notification text. Group by filesystem source so a shared pool
+ * counts once, and name the other mounts on the survivor.
+ */
+export function groupDisksBySource(rows: DiskRow[]): DiskMetrics[] {
+  const groups = new Map<string, DiskRow[]>();
+  for (const row of rows) {
+    // df prints "-" for a source it cannot name; fall back to the mount so
+    // those stay distinct rather than collapsing into one bogus group.
+    const key = row.source !== "" && row.source !== "-" ? row.source : `mount:${row.mount}`;
+    const existing = groups.get(key);
+    if (existing) existing.push(row);
+    else groups.set(key, [row]);
+  }
+
+  const disks: DiskMetrics[] = [];
+  for (const group of groups.values()) {
+    const primary = [...group].sort(compareMountPriority)[0];
+    // Subvolume quotas can make members disagree; report the fullest so
+    // grouping can never hide the member closest to full.
+    const fullest = group.reduce((worst, row) => (row.usedBytes > worst.usedBytes ? row : worst));
+    const sharedMounts = group
+      .map((row) => row.mount)
+      .filter((mount) => mount !== primary.mount)
+      .sort();
+
+    disks.push({
+      mount: primary.mount,
+      totalBytes: fullest.totalBytes,
+      usedBytes: fullest.usedBytes,
+      availBytes: fullest.availBytes,
+      source: primary.source,
+      fstype: primary.fstype,
+      sharedMounts,
+    });
+  }
+
+  return disks.sort((a, b) => a.mount.localeCompare(b.mount));
+}
+
 export function parseHost(sections: Map<string, string[]>): HostMetrics | null {
   const hostLines = sections.get("HOST") || [];
   if (hostLines.length < 4) return null;
@@ -129,18 +224,7 @@ export function parseHost(sections: Map<string, string[]>): HostMetrics | null {
   const memRow = (memLines[0] || "").trim().split(/\s+/);
   const swapRow = (memLines[1] || "").trim().split(/\s+/);
 
-  const disks: DiskMetrics[] = (sections.get("DISK") || [])
-    .map((line) => line.trim().split(/\s+/))
-    .filter((parts) => parts.length >= 4 && parts[0].startsWith("/"))
-    .map((parts) => ({
-      mount: parts[0],
-      totalBytes: Number(parts[1]) || 0,
-      usedBytes: Number(parts[2]) || 0,
-      availBytes: Number(parts[3]) || 0,
-    }))
-    // Drop pseudo filesystems (e.g. Tencent Lighthouse COS mounts report
-    // hundreds of TB); anything above 50 TiB is not a local disk here.
-    .filter((disk) => disk.totalBytes > 0 && disk.totalBytes < 50 * 1024 ** 4);
+  const disks = groupDisksBySource(parseDiskRows(sections.get("DISK") || []));
 
   let netRx = 0;
   let netTx = 0;

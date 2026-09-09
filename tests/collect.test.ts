@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { parseContainers, parseHost, parseSize, splitSections } from "../backend/collect";
+import { readFileSync } from "node:fs";
+import {
+  groupDisksBySource,
+  parseContainers,
+  parseDiskRows,
+  parseHost,
+  parseSize,
+  splitSections,
+} from "../backend/collect";
 
 const SAMPLE = `@@HOST@@
 demo-app-01
@@ -10,8 +18,8 @@ demo-app-01
 Mem:      7789748224  2670592000   245760000    41943040  4873356224  5119148032
 Swap:     2147479552   536870912  1610608640
 @@DISK@@
-/               126692061184  21474836480 100086840320
-/lhcos-data  281474976710656            0 281474976710656
+/dev/vda1 ext4 /               126692061184  21474836480 100086840320
+/dev/vdb1 ext4 /lhcos-data  281474976710656            0 281474976710656
 @@NET@@
     lo: 8000000    100    0    0    0     0          0         0  8000000    100    0    0    0     0       0          0
   eth0: 18579456000 200000    0    0    0     0          0         0 1073741824 150000    0    0    0     0       0          0
@@ -95,5 +103,81 @@ describe("parseSize", () => {
     expect(parseSize("512MiB")).toBe(512 * 1024 ** 2);
     expect(parseSize("1.5GB")).toBe(1_500_000_000);
     expect(parseSize("bogus")).toBe(null);
+  });
+});
+
+describe("btrfs subvolume grouping", () => {
+  // One disk, two partitions: four btrfs subvolumes sharing the btrfs
+  // partition, plus a separate boot partition.
+  const BTRFS_DF = [
+    "/dev/nvme0n1p2 btrfs / 500107862016 460099244032 40008617984",
+    "/dev/nvme0n1p2 btrfs /home 500107862016 460099244032 40008617984",
+    "/dev/nvme0n1p2 btrfs /var/log 500107862016 460099244032 40008617984",
+    "/dev/nvme0n1p2 btrfs /.snapshots 500107862016 460099244032 40008617984",
+    "/dev/nvme0n1p1 vfat /boot 1073741824 268435456 805306368",
+  ];
+
+  const disks = groupDisksBySource(parseDiskRows(BTRFS_DF));
+
+  test("collapses subvolumes of one filesystem into a single disk", () => {
+    expect(disks.length).toBe(2);
+  });
+
+  test("keeps separate partitions of the same physical disk apart", () => {
+    expect(disks.map((disk) => disk.mount).sort()).toEqual(["/", "/boot"]);
+  });
+
+  test("picks the shallowest mount as the group's primary", () => {
+    const pool = disks.find((disk) => disk.source === "/dev/nvme0n1p2");
+    expect(pool?.mount).toBe("/");
+    expect(pool?.fstype).toBe("btrfs");
+    expect(pool?.sharedMounts).toEqual(["/.snapshots", "/home", "/var/log"]);
+  });
+
+  test("raises one warning, not four, for a filesystem near capacity", () => {
+    // 460099244032 / 500107862016 = 92%, over the 80% fail threshold. Before
+    // grouping this produced four identical red cards and skewed the rollup.
+    const failing = disks.filter((disk) => disk.usedBytes / disk.totalBytes >= 0.8);
+    expect(failing.length).toBe(1);
+  });
+
+  test("reports the fullest member so quotas cannot hide a full subvolume", () => {
+    const quota = groupDisksBySource(parseDiskRows([
+      "/dev/nvme0n1p2 btrfs / 1000 100 900",
+      "/dev/nvme0n1p2 btrfs /home 1000 950 50",
+    ]));
+    expect(quota.length).toBe(1);
+    expect(quota[0].usedBytes).toBe(950);
+  });
+
+  test("does not group filesystems df cannot name", () => {
+    const unnamed = groupDisksBySource(parseDiskRows([
+      "- fuse /mnt/a 1000 100 900",
+      "- fuse /mnt/b 2000 200 1800",
+    ]));
+    expect(unnamed.length).toBe(2);
+  });
+
+  test("keeps mount points containing spaces intact", () => {
+    const rows = parseDiskRows(["/dev/sdb1 ext4 /mnt/my backup drive 1000 100 900"]);
+    expect(rows.length).toBe(1);
+    expect(rows[0].mount).toBe("/mnt/my backup drive");
+  });
+});
+
+describe("CPU load averaging window", () => {
+  const panel = readFileSync(new URL("../Panel.qml", import.meta.url), "utf8");
+
+  test("alerts on the 5-minute average, not the sampling-window spike", () => {
+    const hostRows = panel.match(/function hostRows\([^)]*\)\s*\{[\s\S]*?\n  \}/)?.[0] || "";
+    expect(hostRows).toContain("info.load5 / info.cpuCount");
+    expect(hostRows).not.toContain("info.load1 / info.cpuCount");
+  });
+
+  test("still shows all three averages so nothing is hidden", () => {
+    const panelText = panel;
+    expect(panelText).toContain('"1m " + info.load1.toFixed(2)');
+    expect(panelText).toContain('" · 5m " + info.load5.toFixed(2)');
+    expect(panelText).toContain('" · 15m " + info.load15.toFixed(2)');
   });
 });
