@@ -42,13 +42,14 @@ export async function readBounded(
 }
 
 /**
- * One read-only remote script per refresh. Docker calls prefer
+ * One read-only remote script per refresh. Container calls prefer
  * `sudo -n docker` (operator accounts deliberately outside the docker
- * group) and fall back to plain `docker` for docker-group hosts; a host
- * with neither simply yields empty docker sections.
- * `docker inspect` uses a narrow format string on purpose —
+ * group), then plain `docker`, then the same pair for `podman` (rootless
+ * and rootful). A host with none of those simply yields empty container
+ * sections. `inspect` uses a narrow format string on purpose —
  * full inspect JSON would leak container environment variables (secrets)
- * into the snapshot.
+ * into the snapshot. Section names stay `DOCKER_*` so existing parsers
+ * and the snapshot cache keep working.
  */
 export const REMOTE_SCRIPT = `
 set -o pipefail
@@ -63,15 +64,19 @@ echo "@@DISK@@"
 df -B1 --output=source,fstype,target,size,used,avail -x tmpfs -x devtmpfs -x overlay -x squashfs -x iso9660 2>/dev/null | tail -n +2
 echo "@@NET@@"
 tail -n +3 /proc/net/dev
-if sudo -n docker version >/dev/null 2>&1; then DOCKER="sudo -n docker"; elif docker version >/dev/null 2>&1; then DOCKER="docker"; else DOCKER=""; fi
+if sudo -n docker version >/dev/null 2>&1; then CTR="sudo -n docker"
+elif docker version >/dev/null 2>&1; then CTR="docker"
+elif sudo -n podman version >/dev/null 2>&1; then CTR="sudo -n podman"
+elif podman version >/dev/null 2>&1; then CTR="podman"
+else CTR=""; fi
 echo "@@DOCKER_PS@@"
-[ -n "$DOCKER" ] && $DOCKER ps --all --format "{{json .}}" 2>/dev/null || true
+[ -n "$CTR" ] && $CTR ps --all --format "{{json .}}" 2>/dev/null || true
 echo "@@DOCKER_STATS@@"
-[ -n "$DOCKER" ] && $DOCKER stats --no-stream --format "{{json .}}" 2>/dev/null || true
+[ -n "$CTR" ] && $CTR stats --no-stream --format "{{json .}}" 2>/dev/null || true
 echo "@@DOCKER_INSPECT@@"
-ids=$([ -n "$DOCKER" ] && $DOCKER ps -aq 2>/dev/null || true)
+ids=$([ -n "$CTR" ] && $CTR ps -aq 2>/dev/null || true)
 if [ -n "$ids" ]; then
-  $DOCKER inspect --format '{"Name":{{json .Name}},"Restarts":{{.RestartCount}},"StartedAt":{{json .State.StartedAt}},"Status":{{json .State.Status}},"OOM":{{.State.OOMKilled}},"Health":{{if .State.Health}}{{json .State.Health.Status}}{{else}}"none"{{end}}}' $ids 2>/dev/null || true
+  $CTR inspect --format '{"Name":{{json .Name}},"Restarts":{{.RestartCount}},"StartedAt":{{json .State.StartedAt}},"Status":{{json .State.Status}},"OOM":{{.State.OOMKilled}},"Health":{{if .State.Health}}{{json .State.Health.Status}}{{else}}"none"{{end}}}' $ids 2>/dev/null || true
 fi
 echo "@@END@@"
 `;
@@ -279,7 +284,13 @@ export function parseHost(sections: Map<string, string[]>): HostMetrics | null {
     const parts = line.trim().split(/\s+/);
     if (parts.length < 10) continue;
     const iface = parts[0].replace(/:$/, "");
-    if (iface === "lo" || iface.startsWith("br-") || iface.startsWith("veth") || iface === "docker0")
+    if (
+      iface === "lo" ||
+      iface.startsWith("br-") ||
+      iface.startsWith("veth") ||
+      iface === "docker0" ||
+      iface === "podman0"
+    )
       continue;
     netRx += Number(parts[1]) || 0;
     netTx += Number(parts[9]) || 0;
@@ -304,7 +315,7 @@ export function parseHost(sections: Map<string, string[]>): HostMetrics | null {
 }
 
 interface PsRow {
-  Names?: string;
+  Names?: string | string[];
   Image?: string;
   Status?: string;
   State?: string;
@@ -313,11 +324,62 @@ interface PsRow {
 interface StatsRow {
   Name?: string;
   CPUPerc?: string;
-  MemUsage?: string;
-  MemPerc?: string;
+  CPU?: number | string;
+  MemUsage?: string | number;
+  MemLimit?: number;
+  MemPerc?: string | number;
   NetIO?: string;
   BlockIO?: string;
-  PIDs?: string;
+  PIDs?: string | number;
+}
+
+function psName(row: PsRow): string {
+  const names = row.Names;
+  if (Array.isArray(names)) return String(names[0] || "");
+  return String(names || "");
+}
+
+function cpuPercentFromStats(stat: StatsRow | undefined): number | null {
+  if (!stat) return null;
+  if (stat.CPUPerc != null && stat.CPUPerc !== "") {
+    const n = Number(String(stat.CPUPerc).replace("%", ""));
+    return Number.isFinite(n) ? n : null;
+  }
+  if (stat.CPU != null && stat.CPU !== "") {
+    const n = Number(stat.CPU);
+    return Number.isFinite(n) ? Math.round(n * 10) / 10 : null;
+  }
+  return null;
+}
+
+function memFromStats(stat: StatsRow | undefined): {
+  usage: number | null;
+  limit: number | null;
+  percent: number | null;
+} {
+  if (!stat) return { usage: null, limit: null, percent: null };
+
+  let usage: number | null = null;
+  let limit: number | null = null;
+  if (typeof stat.MemUsage === "number") {
+    usage = stat.MemUsage;
+    limit = typeof stat.MemLimit === "number" ? stat.MemLimit : null;
+  } else {
+    const memParts = String(stat.MemUsage || "").split("/");
+    usage = memParts.length === 2 ? parseSize(memParts[0]) : null;
+    limit = memParts.length === 2 ? parseSize(memParts[1]) : null;
+  }
+
+  let percent: number | null = null;
+  if (stat.MemPerc != null && stat.MemPerc !== "") {
+    const n = Number(String(stat.MemPerc).replace("%", ""));
+    if (Number.isFinite(n)) percent = Math.round(n * 10) / 10;
+  }
+  if (percent === null && usage !== null && limit !== null && limit > 0) {
+    percent = Math.round((usage / limit) * 1000) / 10;
+  }
+
+  return { usage, limit, percent };
 }
 
 interface InspectRow {
@@ -340,32 +402,27 @@ export function parseContainers(sections: Map<string, string[]>): ContainerMetri
   );
 
   return ps.slice(0, MAX_CONTAINERS).map((row) => {
-    const name = String(row.Names || "");
+    const name = psName(row);
     const stat = statsByName.get(name);
     const info = inspectByName.get(name);
-    const memParts = String(stat?.MemUsage || "").split("/");
-    const memUsage = memParts.length === 2 ? parseSize(memParts[0]) : null;
-    const memLimit = memParts.length === 2 ? parseSize(memParts[1]) : null;
+    const mem = memFromStats(stat);
 
     return {
       name,
       image: String(row.Image || ""),
-      status: String(row.Status || ""),
+      status: String(row.Status || row.State || ""),
       state: String(info?.Status || row.State || ""),
       health: String(info?.Health || "none"),
       restarts: Number(info?.Restarts ?? 0),
       startedAt: String(info?.StartedAt || ""),
       oomKilled: Boolean(info?.OOM),
-      cpuPercent: stat?.CPUPerc ? Number(String(stat.CPUPerc).replace("%", "")) : null,
-      memUsageBytes: memUsage,
-      memLimitBytes: memLimit,
-      memPercent:
-        memUsage !== null && memLimit !== null && memLimit > 0
-          ? Math.round((memUsage / memLimit) * 1000) / 10
-          : null,
+      cpuPercent: cpuPercentFromStats(stat),
+      memUsageBytes: mem.usage,
+      memLimitBytes: mem.limit,
+      memPercent: mem.percent,
       netIo: String(stat?.NetIO || ""),
       blockIo: String(stat?.BlockIO || ""),
-      pids: stat?.PIDs ? Number(stat.PIDs) : null,
+      pids: stat?.PIDs != null && stat.PIDs !== "" ? Number(stat.PIDs) : null,
     };
   });
 }

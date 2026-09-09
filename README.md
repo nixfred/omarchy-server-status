@@ -16,14 +16,14 @@
 
 ---
 
-You run a couple of VPSes, a homelab box, maybe a small Docker product. You do
+You run a couple of VPSes, a homelab box, maybe a small Docker or Podman product. You do
 not run Prometheus, and you should not have to open a browser tab to answer the
 only question you actually ask all day:
 
 > **Is everything OK over there?**
 
 This is a bar widget that answers it. Load, memory, per-disk usage, network
-rate, uptime, and every Docker container's health and resource usage — one
+rate, uptime, and every Docker or Podman container's health and resource usage — one
 click from the Omarchy bar, with desktop notifications when something crosses a
 threshold. It complements a real monitoring stack rather than replacing one: no
 history, no time series, no server-side storage. Just the current truth, on
@@ -55,9 +55,10 @@ running on your servers. Remove the plugin and there is nothing to clean up
 remotely, because nothing was ever put there.
 
 The remote script reads `/proc`, `free`, and `df` for host metrics, and
-`docker ps / stats / inspect` for containers. Hosts without Docker simply show
-host metrics — the containers column appears only when containers exist.
-`docker inspect` deliberately uses a narrow format string: full inspect output
+`docker` or `podman` `ps / stats / inspect` for containers (Docker first, then
+Podman, including rootless). Hosts without either simply show host metrics —
+the containers column appears only when containers exist.
+`inspect` deliberately uses a narrow format string: full inspect output
 would leak container environment variables (secrets) into the snapshot.
 
 ## What it looks like
@@ -125,8 +126,9 @@ sharing. Toggle it off and these are your real nodes.*
   `Bun.spawn` / `bun test` APIs are used)
 - Passwordless SSH to each server (key-based; the backend runs with
   `BatchMode=yes`, so password prompts fail closed)
-- For container metrics, the remote account needs either `sudo -n docker`
-  or membership in the `docker` group; host metrics work without either
+- For container metrics, the remote account needs `sudo -n docker` or
+  membership in the `docker` group, **or** a working `podman` for that
+  same account (rootless user Podman is enough); host metrics work without either
 
 ## Install
 
@@ -272,7 +274,7 @@ Opening an SSH session is not free on the host being measured. PAM session
 hooks and `/etc/update-motd.d/` scripts run on connect, and on a well-equipped
 server those can mean `fail2ban-client status`, `podman ps`, `incus list`,
 `df`, `free`, and a couple of log greps — all firing at once, concurrently
-with this plugin's own `docker ps` / `docker stats` / `docker inspect` calls.
+with this plugin's own `docker`/`podman` `ps` / `stats` / `inspect` calls.
 
 That is ten to fifteen short-lived processes inside a two-second window. On a
 2–4 core VM it is enough to fill the kernel run queue, and a `/proc/loadavg`

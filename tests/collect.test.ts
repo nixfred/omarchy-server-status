@@ -55,6 +55,12 @@ describe("SSH command construction", () => {
   test("excludes read-only ISO mounts from disk capacity alerts", () => {
     expect(REMOTE_SCRIPT).toContain("-x iso9660");
   });
+
+  test("falls back to podman when docker is not available", () => {
+    expect(REMOTE_SCRIPT).toContain("podman version");
+    expect(REMOTE_SCRIPT).toContain("CTR=\"podman\"");
+    expect(REMOTE_SCRIPT).toContain("sudo -n docker version");
+  });
 });
 
 describe("splitSections", () => {
@@ -121,6 +127,48 @@ describe("parseContainers", () => {
     expect(web?.memPercent).toBe(31.3);
     const redis = containers.find((c) => c.name === "redis-1");
     expect(redis?.restarts).toBe(2);
+  });
+});
+
+const PODMAN_SAMPLE = `@@HOST@@
+omarchy
+4
+0.10 0.10 0.10 1/200 1
+100 0
+@@MEM@@
+Mem:      1 1 1 1 1 1
+Swap:     1 0 1
+@@DISK@@
+/dev/sda1 ext4 / 1 1 1
+@@NET@@
+    lo: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+@@DOCKER_PS@@
+{"Names":["openclaw"],"Image":"ghcr.io/openclaw/openclaw:latest","Status":"","State":"running"}
+{"Names":["hermes"],"Image":"docker.io/nousresearch/hermes-agent:latest","Status":"","State":"running"}
+@@DOCKER_STATS@@
+{"Name":"openclaw","CPU":1.95,"MemUsage":600338432,"MemLimit":4294967296,"MemPerc":13.97,"PIDs":13}
+{"Name":"hermes","CPU":2.24,"MemUsage":440020992,"MemLimit":4294967296,"MemPerc":10.25,"PIDs":39}
+@@DOCKER_INSPECT@@
+{"Name":"openclaw","Restarts":0,"StartedAt":"2026-09-09T09:55:09Z","Status":"running","OOM":false,"Health":"none"}
+{"Name":"hermes","Restarts":1,"StartedAt":"2026-09-09T09:55:10Z","Status":"running","OOM":false,"Health":"none"}
+@@END@@
+`;
+
+describe("parseContainers podman JSON", () => {
+  const containers = parseContainers(splitSections(PODMAN_SAMPLE));
+
+  test("reads array Names and numeric stats from podman --format json", () => {
+    expect(containers.length).toBe(2);
+    const openclaw = containers.find((c) => c.name === "openclaw");
+    expect(openclaw?.state).toBe("running");
+    expect(openclaw?.cpuPercent).toBe(2.0);
+    expect(openclaw?.memUsageBytes).toBe(600338432);
+    expect(openclaw?.memLimitBytes).toBe(4294967296);
+    expect(openclaw?.memPercent).toBe(14.0);
+    expect(openclaw?.pids).toBe(13);
+    const hermes = containers.find((c) => c.name === "hermes");
+    expect(hermes?.restarts).toBe(1);
+    expect(hermes?.cpuPercent).toBe(2.2);
   });
 });
 

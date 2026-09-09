@@ -651,7 +651,7 @@ Panel {
     // Judge the 5-minute average, not load1. Opening the SSH session for a
     // refresh briefly spikes the remote run queue itself: PAM session hooks
     // and /etc/update-motd.d scripts (fail2ban, podman, incus, log greps) run
-    // on connect, concurrently with this plugin's own docker queries. A load1
+    // on connect, concurrently with this plugin's own docker/podman queries. A load1
     // sample read inside that burst reports a critical alert on a host that is
     // sitting idle, immediately followed by a recovery notification.
     //

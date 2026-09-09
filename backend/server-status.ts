@@ -6,7 +6,7 @@ import { collectTailnetSnapshot } from "./tailnet";
 function usage(): string {
   return `Usage: server-status <status|tailnet> [--host <ssh-host>] [--compact]
 
-Collect host and Docker metrics from a remote server over one read-only
+Collect host and Docker/Podman metrics from a remote server over one read-only
 SSH round trip, or discover every node from the local Tailscale network.
 Nothing is installed or written on any node.`;
 }
