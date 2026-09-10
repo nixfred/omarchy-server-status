@@ -6,6 +6,7 @@
 
 **Your whole tailnet, one dot in the bar. Green means go.**
 
+[![CI](https://img.shields.io/github/actions/workflow/status/nixfred/omarchy-server-status/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/nixfred/omarchy-server-status/actions/workflows/ci.yml)
 [![Omarchy plugin](https://img.shields.io/badge/Omarchy-bar%20widget-38bdf8?style=flat-square)](https://omarchy.org)
 [![Tailscale native](https://img.shields.io/badge/Tailscale-native%20discovery-5eead4?style=flat-square)](https://tailscale.com)
 [![Runs on Bun](https://img.shields.io/badge/runtime-Bun%201.2%2B-c084fc?style=flat-square)](https://bun.sh)
