@@ -404,7 +404,24 @@ Panel {
   }
 
   function isWarningMuted(hostAlias, warningId) {
-    return warningIds(hostAlias).indexOf(String(warningId || "")) >= 0
+    var ids = warningIds(hostAlias)
+    var id = String(warningId || "")
+    if (ids.indexOf(id) >= 0) return true
+    // Container warning ids gained a runtime segment when Docker and Podman
+    // became collectable together ("container-docker-web-1" rather than
+    // "container-web-1"). Mutes recorded before that still name the old id, and
+    // a mute silently reverting is worse than a stale entry: someone muted that
+    // card on purpose. Accept the legacy form for docker, which is what every
+    // pre-existing mute was.
+    var legacy = legacyWarningId(id)
+    return legacy !== "" && ids.indexOf(legacy) >= 0
+  }
+
+  function legacyWarningId(warningId) {
+    var id = String(warningId || "")
+    return id.indexOf("container-docker-") === 0
+      ? "container-" + id.slice("container-docker-".length)
+      : ""
   }
 
   function isHostMuted(hostAlias) {
@@ -439,8 +456,15 @@ Panel {
     var nextMap = Object.assign({}, mutedWarningsByHost)
     var nextIds = warningIds(host).slice()
     var index = nextIds.indexOf(id)
-    if (index >= 0) nextIds.splice(index, 1)
-    else nextIds.push(id)
+    // Unmuting must also clear a legacy entry, or the card would re-mute itself
+    // on the next read through the compatibility path above.
+    var legacy = legacyWarningId(id)
+    var legacyIndex = legacy !== "" ? nextIds.indexOf(legacy) : -1
+    if (index >= 0 || legacyIndex >= 0) {
+      if (index >= 0) nextIds.splice(index, 1)
+      legacyIndex = legacy !== "" ? nextIds.indexOf(legacy) : -1
+      if (legacyIndex >= 0) nextIds.splice(legacyIndex, 1)
+    } else nextIds.push(id)
     if (nextIds.length > 0) nextMap[host] = nextIds
     else delete nextMap[host]
     mutedWarningsByHost = nextMap
@@ -449,7 +473,8 @@ Panel {
   }
 
   function containerWarningId(container) {
-    return "container-" + String(container && container.name || "")
+    var runtime = String(container && container.runtime || "docker")
+    return "container-" + runtime + "-" + String(container && container.name || "")
   }
 
   function copyText(value) {
@@ -668,7 +693,7 @@ Panel {
     // Judge the 5-minute average, not load1. Opening the SSH session for a
     // refresh briefly spikes the remote run queue itself: PAM session hooks
     // and /etc/update-motd.d scripts (fail2ban, podman, incus, log greps) run
-    // on connect, concurrently with this plugin's own docker queries. A load1
+    // on connect, concurrently with this plugin's own docker/podman queries. A load1
     // sample read inside that burst reports a critical alert on a host that is
     // sitting idle, immediately followed by a recovery notification.
     //
@@ -759,12 +784,14 @@ Panel {
       return "pass"
     }
     if (container.state === "restarting") return "fail"
+    if (container.state === "paused") return "warn"
     if (container.state === "exited" || container.state === "dead") return "warn"
     return "unknown"
   }
 
   function containerDetail(container) {
     var parts = []
+    if (container.runtime) parts.push(String(container.runtime))
     if (container.cpuPercent !== null) parts.push("cpu " + container.cpuPercent.toFixed(1) + "%")
     if (container.memPercent !== null)
       parts.push("mem " + formatBytes(container.memUsageBytes) + " (" + container.memPercent.toFixed(0) + "%)")
@@ -772,6 +799,19 @@ Panel {
     if (container.health !== "none") parts.push(container.health)
     else parts.push(container.state)
     return parts.join(" · ")
+  }
+
+  function workloadHeader() {
+    var list = root.containers
+    var kvm = 0
+    var other = 0
+    for (var i = 0; i < list.length; i += 1) {
+      if (String(list[i] && list[i].runtime || "") === "kvm") kvm += 1
+      else other += 1
+    }
+    if (kvm > 0 && other > 0) return "CONTAINERS · " + other + " · VMS · " + kvm
+    if (kvm > 0) return "VMS · " + kvm
+    return "CONTAINERS · " + list.length
   }
 
   function summaryFor(hostAlias) {
@@ -1669,7 +1709,7 @@ Panel {
             visible: !root.pickerOpen && root.activeDevice && root.containers.length > 0
 
             PanelSectionHeader {
-              text: `CONTAINERS · ${root.containers.length}`
+              text: root.workloadHeader()
               foreground: root.foreground
               fontFamily: root.fontFamily
             }

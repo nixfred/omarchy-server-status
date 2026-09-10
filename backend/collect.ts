@@ -42,13 +42,12 @@ export async function readBounded(
 }
 
 /**
- * One read-only remote script per refresh. Docker calls prefer
- * `sudo -n docker` (operator accounts deliberately outside the docker
- * group) and fall back to plain `docker` for docker-group hosts; a host
- * with neither simply yields empty docker sections.
- * `docker inspect` uses a narrow format string on purpose —
- * full inspect JSON would leak container environment variables (secrets)
- * into the snapshot.
+ * One read-only remote script per refresh. Docker and Podman are probed
+ * independently so a host running both engines reports both sets. If the
+ * docker CLI is actually talking to Podman, the docker pass is dropped to
+ * avoid listing the same containers twice. KVM/libvirt domains come from
+ * `virsh` on qemu:///system and qemu:///session. `inspect` / `dominfo` stay
+ * narrow so environment variables and domain XML never leave the host.
  */
 export const REMOTE_SCRIPT = `
 set -o pipefail
@@ -63,16 +62,65 @@ echo "@@DISK@@"
 df -B1 --output=source,fstype,target,size,used,avail -x tmpfs -x devtmpfs -x overlay -x squashfs -x iso9660 2>/dev/null | tail -n +2
 echo "@@NET@@"
 tail -n +3 /proc/net/dev
-if sudo -n docker version >/dev/null 2>&1; then DOCKER="sudo -n docker"; elif docker version >/dev/null 2>&1; then DOCKER="docker"; else DOCKER=""; fi
-echo "@@DOCKER_PS@@"
-[ -n "$DOCKER" ] && $DOCKER ps --all --format "{{json .}}" 2>/dev/null || true
-echo "@@DOCKER_STATS@@"
-[ -n "$DOCKER" ] && $DOCKER stats --no-stream --format "{{json .}}" 2>/dev/null || true
-echo "@@DOCKER_INSPECT@@"
-ids=$([ -n "$DOCKER" ] && $DOCKER ps -aq 2>/dev/null || true)
-if [ -n "$ids" ]; then
-  $DOCKER inspect --format '{"Name":{{json .Name}},"Restarts":{{.RestartCount}},"StartedAt":{{json .State.StartedAt}},"Status":{{json .State.Status}},"OOM":{{.State.OOMKilled}},"Health":{{if .State.Health}}{{json .State.Health.Status}}{{else}}"none"{{end}}}' $ids 2>/dev/null || true
+dump_engine() {
+  bin="$1"
+  prefix="$2"
+  echo "@@"\${prefix}"_PS@@"
+  [ -n "$bin" ] && $bin ps --all --format "{{json .}}" 2>/dev/null || true
+  echo "@@"\${prefix}"_STATS@@"
+  [ -n "$bin" ] && $bin stats --no-stream --format "{{json .}}" 2>/dev/null || true
+  echo "@@"\${prefix}"_INSPECT@@"
+  ids=$([ -n "$bin" ] && $bin ps -aq 2>/dev/null || true)
+  if [ -n "$ids" ]; then
+    $bin inspect --format '{"Name":{{json .Name}},"Restarts":{{.RestartCount}},"StartedAt":{{json .State.StartedAt}},"Status":{{json .State.Status}},"OOM":{{.State.OOMKilled}},"Health":{{if .State.Health}}{{json .State.Health.Status}}{{else}}"none"{{end}}}' $ids 2>/dev/null || true
+  fi
+}
+if sudo -n docker version >/dev/null 2>&1; then DOCKER="sudo -n docker"
+elif docker version >/dev/null 2>&1; then DOCKER="docker"
+else DOCKER=""; fi
+if sudo -n podman version >/dev/null 2>&1; then PODMAN="sudo -n podman"
+elif podman version >/dev/null 2>&1; then PODMAN="podman"
+else PODMAN=""; fi
+if [ -n "$DOCKER" ] && $DOCKER info 2>/dev/null | grep -qi podman; then
+  [ -n "$PODMAN" ] || PODMAN="$DOCKER"
+  DOCKER=""
 fi
+dump_engine "$DOCKER" DOCKER
+dump_engine "$PODMAN" PODMAN
+json_escape() { printf '%s' "$1" | sed 's/\\\\/\\\\\\\\/g; s/"/\\\\"/g'; }
+dump_kvm_uri() {
+  bin="$1"
+  uri="$2"
+  [ -n "$bin" ] || return 0
+  names=$($bin -c "$uri" list --all --name 2>/dev/null) || return 0
+  count=0
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    count=$((count + 1))
+    [ "$count" -le 64 ] || break
+    info=$($bin -c "$uri" dominfo "$name" 2>/dev/null) || continue
+    state=$(printf '%s\\n' "$info" | awk -F': *' '/^State:/{print $2; exit}')
+    cpus=$(printf '%s\\n' "$info" | awk -F': *' '/^CPU\\(s\\):/{print $2; exit}')
+    maxm=$(printf '%s\\n' "$info" | awk '/^Max memory:/{print $3; exit}')
+    used=$(printf '%s\\n' "$info" | awk '/^Used memory:/{print $3; exit}')
+    [ -n "$cpus" ] || cpus=0
+    [ -n "$maxm" ] || maxm=0
+    [ -n "$used" ] || used=0
+    printf '{"Name":"%s","State":"%s","Cpus":%s,"MaxMemKib":%s,"UsedMemKib":%s,"Uri":"%s"}\\n' \\
+      "$(json_escape "$name")" "$(json_escape "$state")" "$cpus" "$maxm" "$used" "$(json_escape "$uri")"
+  done <<KVM_NAMES
+$names
+KVM_NAMES
+}
+pick_virsh() {
+  uri="$1"
+  if sudo -n virsh -c "$uri" list >/dev/null 2>&1; then echo "sudo -n virsh"
+  elif virsh -c "$uri" list >/dev/null 2>&1; then echo "virsh"
+  else echo ""; fi
+}
+echo "@@KVM@@"
+dump_kvm_uri "$(pick_virsh qemu:///system)" qemu:///system
+dump_kvm_uri "$(pick_virsh qemu:///session)" qemu:///session
 echo "@@END@@"
 `;
 
@@ -279,7 +327,13 @@ export function parseHost(sections: Map<string, string[]>): HostMetrics | null {
     const parts = line.trim().split(/\s+/);
     if (parts.length < 10) continue;
     const iface = parts[0].replace(/:$/, "");
-    if (iface === "lo" || iface.startsWith("br-") || iface.startsWith("veth") || iface === "docker0")
+    if (
+      iface === "lo" ||
+      iface.startsWith("br-") ||
+      iface.startsWith("veth") ||
+      iface === "docker0" ||
+      iface === "podman0"
+    )
       continue;
     netRx += Number(parts[1]) || 0;
     netTx += Number(parts[9]) || 0;
@@ -304,7 +358,7 @@ export function parseHost(sections: Map<string, string[]>): HostMetrics | null {
 }
 
 interface PsRow {
-  Names?: string;
+  Names?: string | string[];
   Image?: string;
   Status?: string;
   State?: string;
@@ -313,11 +367,62 @@ interface PsRow {
 interface StatsRow {
   Name?: string;
   CPUPerc?: string;
-  MemUsage?: string;
-  MemPerc?: string;
+  CPU?: number | string;
+  MemUsage?: string | number;
+  MemLimit?: number;
+  MemPerc?: string | number;
   NetIO?: string;
   BlockIO?: string;
-  PIDs?: string;
+  PIDs?: string | number;
+}
+
+function psName(row: PsRow): string {
+  const names = row.Names;
+  if (Array.isArray(names)) return String(names[0] || "");
+  return String(names || "");
+}
+
+function cpuPercentFromStats(stat: StatsRow | undefined): number | null {
+  if (!stat) return null;
+  if (stat.CPUPerc != null && stat.CPUPerc !== "") {
+    const n = Number(String(stat.CPUPerc).replace("%", ""));
+    return Number.isFinite(n) ? n : null;
+  }
+  if (stat.CPU != null && stat.CPU !== "") {
+    const n = Number(stat.CPU);
+    return Number.isFinite(n) ? Math.round(n * 10) / 10 : null;
+  }
+  return null;
+}
+
+function memFromStats(stat: StatsRow | undefined): {
+  usage: number | null;
+  limit: number | null;
+  percent: number | null;
+} {
+  if (!stat) return { usage: null, limit: null, percent: null };
+
+  let usage: number | null = null;
+  let limit: number | null = null;
+  if (typeof stat.MemUsage === "number") {
+    usage = stat.MemUsage;
+    limit = typeof stat.MemLimit === "number" ? stat.MemLimit : null;
+  } else {
+    const memParts = String(stat.MemUsage || "").split("/");
+    usage = memParts.length === 2 ? parseSize(memParts[0]) : null;
+    limit = memParts.length === 2 ? parseSize(memParts[1]) : null;
+  }
+
+  let percent: number | null = null;
+  if (stat.MemPerc != null && stat.MemPerc !== "") {
+    const n = Number(String(stat.MemPerc).replace("%", ""));
+    if (Number.isFinite(n)) percent = Math.round(n * 10) / 10;
+  }
+  if (percent === null && usage !== null && limit !== null && limit > 0) {
+    percent = Math.round((usage / limit) * 1000) / 10;
+  }
+
+  return { usage, limit, percent };
 }
 
 interface InspectRow {
@@ -329,45 +434,111 @@ interface InspectRow {
   Health?: string;
 }
 
-export function parseContainers(sections: Map<string, string[]>): ContainerMetrics[] {
-  const ps = parseJsonLines<PsRow>(sections.get("DOCKER_PS") || []);
-  const stats = parseJsonLines<StatsRow>(sections.get("DOCKER_STATS") || []);
-  const inspect = parseJsonLines<InspectRow>(sections.get("DOCKER_INSPECT") || []);
+function parseEngine(
+  sections: Map<string, string[]>,
+  prefix: string,
+  runtime: "docker" | "podman",
+): ContainerMetrics[] {
+  const ps = parseJsonLines<PsRow>(sections.get(`${prefix}_PS`) || []);
+  const stats = parseJsonLines<StatsRow>(sections.get(`${prefix}_STATS`) || []);
+  const inspect = parseJsonLines<InspectRow>(sections.get(`${prefix}_INSPECT`) || []);
 
   const statsByName = new Map(stats.map((row) => [String(row.Name || ""), row]));
   const inspectByName = new Map(
     inspect.map((row) => [String(row.Name || "").replace(/^\//, ""), row]),
   );
 
-  return ps.slice(0, MAX_CONTAINERS).map((row) => {
-    const name = String(row.Names || "");
+  return ps.map((row) => {
+    const name = psName(row);
     const stat = statsByName.get(name);
     const info = inspectByName.get(name);
-    const memParts = String(stat?.MemUsage || "").split("/");
-    const memUsage = memParts.length === 2 ? parseSize(memParts[0]) : null;
-    const memLimit = memParts.length === 2 ? parseSize(memParts[1]) : null;
+    const mem = memFromStats(stat);
 
     return {
       name,
+      runtime,
       image: String(row.Image || ""),
-      status: String(row.Status || ""),
+      status: String(row.Status || row.State || ""),
       state: String(info?.Status || row.State || ""),
       health: String(info?.Health || "none"),
       restarts: Number(info?.Restarts ?? 0),
       startedAt: String(info?.StartedAt || ""),
       oomKilled: Boolean(info?.OOM),
-      cpuPercent: stat?.CPUPerc ? Number(String(stat.CPUPerc).replace("%", "")) : null,
-      memUsageBytes: memUsage,
-      memLimitBytes: memLimit,
-      memPercent:
-        memUsage !== null && memLimit !== null && memLimit > 0
-          ? Math.round((memUsage / memLimit) * 1000) / 10
-          : null,
+      cpuPercent: cpuPercentFromStats(stat),
+      memUsageBytes: mem.usage,
+      memLimitBytes: mem.limit,
+      memPercent: mem.percent,
       netIo: String(stat?.NetIO || ""),
       blockIo: String(stat?.BlockIO || ""),
-      pids: stat?.PIDs ? Number(stat.PIDs) : null,
+      pids: stat?.PIDs != null && stat.PIDs !== "" ? Number(stat.PIDs) : null,
     };
   });
+}
+
+interface KvmRow {
+  Name?: string;
+  State?: string;
+  Cpus?: number | string;
+  MaxMemKib?: number | string;
+  UsedMemKib?: number | string;
+  Uri?: string;
+}
+
+function kvmState(raw: string): string {
+  const state = raw.toLowerCase().replace(/\s+/g, " ").trim();
+  if (state === "running") return "running";
+  if (state === "paused" || state === "pmsuspended") return "paused";
+  if (state === "shut off" || state === "shutoff") return "exited";
+  if (state === "crashed" || state === "dying") return "dead";
+  return state || "unknown";
+}
+
+function parseKvm(sections: Map<string, string[]>): ContainerMetrics[] {
+  const seen = new Set<string>();
+  const rows: ContainerMetrics[] = [];
+  for (const row of parseJsonLines<KvmRow>(sections.get("KVM") || [])) {
+    const name = String(row.Name || "").trim();
+    if (!name) continue;
+    const uri = String(row.Uri || "");
+    const key = `${uri}::${name}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const usedKib = Number(row.UsedMemKib);
+    const maxKib = Number(row.MaxMemKib);
+    const usage = Number.isFinite(usedKib) ? Math.round(usedKib * 1024) : null;
+    const limit = Number.isFinite(maxKib) ? Math.round(maxKib * 1024) : null;
+    const state = kvmState(String(row.State || ""));
+    rows.push({
+      name,
+      runtime: "kvm",
+      image: uri ? `kvm ${uri}` : "kvm",
+      status: String(row.State || state),
+      state,
+      health: "none",
+      restarts: 0,
+      startedAt: "",
+      oomKilled: false,
+      cpuPercent: null,
+      memUsageBytes: usage,
+      memLimitBytes: limit,
+      memPercent:
+        usage !== null && limit !== null && limit > 0
+          ? Math.round((usage / limit) * 1000) / 10
+          : null,
+      netIo: "",
+      blockIo: "",
+      pids: null,
+    });
+  }
+  return rows;
+}
+
+export function parseContainers(sections: Map<string, string[]>): ContainerMetrics[] {
+  return [
+    ...parseEngine(sections, "DOCKER", "docker"),
+    ...parseEngine(sections, "PODMAN", "podman"),
+    ...parseKvm(sections),
+  ].slice(0, MAX_CONTAINERS);
 }
 
 export async function collectSnapshot(sshHost: string): Promise<ServerSnapshot> {
