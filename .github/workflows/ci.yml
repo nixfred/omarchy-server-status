@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Read-only: this workflow validates, it never publishes.
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: bun ${{ matrix.bun }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 1.2 is the floor the README promises; latest catches regressions
+        # from Bun itself. Testing both means the documented minimum is a
+        # verified claim rather than an assumption.
+        bun: ["1.2.0", "latest"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ matrix.bun }}
+
+      # `bun run check` is the test suite plus a build of the collector entry
+      # point. The suite covers the backend parsers and asserts invariants
+      # against Panel.qml source, so it runs anywhere; nothing needs Omarchy
+      # installed. `omarchy plugin validate` stays a local step, because the
+      # Omarchy CLI is not available on a runner.
+      - name: bun run check
+        run: bun run check

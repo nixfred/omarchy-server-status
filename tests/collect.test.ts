@@ -555,20 +555,55 @@ describe("theme status palette", () => {
     expect(result).toMatchObject(FALLBACK);
   });
 
-  test("every installed theme resolves to a legible triple", () => {
-    // Guards against a future threshold change quietly breaking a real theme.
+  // Real palettes lifted from the themes Omarchy ships, so the thresholds are
+  // pinned against actual data on every machine rather than only where Omarchy
+  // is installed. `themed` records the decision each one must keep producing.
+  const SHIPPED_THEMES = [
+    { name: "tokyo-night", themed: true, green: "#9ece6a", yellow: "#e0af68", red: "#f7768e", background: "#1a1b26" },
+    { name: "catppuccin", themed: true, green: "#a6e3a1", yellow: "#f9e2af", red: "#f38ba8", background: "#1e1e2e" },
+    { name: "nord", themed: true, green: "#a3be8c", yellow: "#ebcb8b", red: "#bf616a", background: "#2e3440" },
+    { name: "gruvbox", themed: true, green: "#a9b665", yellow: "#d8a657", red: "#ea6962", background: "#282828" },
+    { name: "kanagawa", themed: true, green: "#76946a", yellow: "#c0a36e", red: "#c34043", background: "#1f1f28" },
+    { name: "ethereal", themed: true, green: "#92a593", yellow: "#E9BB4F", red: "#ED5B5A", background: "#060B1E" },
+    // hackerman's red is a green; adopting it renders a critical host healthy.
+    { name: "hackerman", themed: false, green: "#4fe88f", yellow: "#50f7d4", red: "#50f872", background: "#0d0d0d" },
+    // matte-black's green is amber and its yellow is red.
+    { name: "matte-black", themed: false, green: "#FFC107", yellow: "#b91c1c", red: "#D35F5F", background: "#121212" },
+    // lumon gives three near-identical blues.
+    { name: "lumon", themed: false, green: "#5e95bc", yellow: "#6fa4c9", red: "#4d86b0", background: "#0b1a26" },
+    { name: "vantablack", themed: false, green: "#b6b6b6", yellow: "#cecece", red: "#a4a4a4", background: "#000000" },
+    { name: "white", themed: false, green: "#3a3a3a", yellow: "#4a4a4a", red: "#2a2a2a", background: "#ffffff" },
+  ];
+
+  test("shipped theme palettes keep their expected decision", () => {
+    for (const theme of SHIPPED_THEMES) {
+      const result = statusPalette(
+        { green: theme.green, yellow: theme.yellow, red: theme.red },
+        FALLBACK,
+        theme.background,
+      );
+      expect({ name: theme.name, themed: result.themed })
+        .toEqual({ name: theme.name, themed: theme.themed });
+      // Whatever the decision, the three roles must stay distinct.
+      expect(new Set([result.pass, result.warn, result.fail]).size).toBe(3);
+      expect(result.reason).not.toBe("");
+    }
+  });
+
+  test("sweeps the themes installed on this machine when there are any", () => {
+    // A bonus pass on an Omarchy box. Skipped elsewhere so the suite runs for
+    // contributors on any machine; SHIPPED_THEMES above is what pins the
+    // thresholds everywhere.
     const dir = "/usr/share/omarchy/themes";
-    let checked = 0;
-    for (const name of readdirSync(dir)) {
+    let names: string[] = [];
+    try { names = readdirSync(dir); } catch { return; }
+    for (const name of names) {
       let raw = "";
       try { raw = readFileSync(`${dir}/${name}/colors.toml`, "utf8"); } catch { continue; }
       const values = parseColorsToml(raw);
       const result = statusPalette(values, FALLBACK, values.background || "#101315");
-      checked += 1;
-      // Whatever the decision, the three roles must always be distinct.
       expect(new Set([result.pass, result.warn, result.fail]).size).toBe(3);
       expect(result.reason).not.toBe("");
     }
-    expect(checked).toBeGreaterThan(0);
   });
 });
