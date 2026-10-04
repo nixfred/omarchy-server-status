@@ -16,7 +16,7 @@ Panel {
   // Kept in step with manifest.json by a test, rather than read from disk at
   // runtime: the panel should not gain a file read and a failure mode just to
   // print its own version.
-  readonly property string pluginVersion: "0.10.0"
+  readonly property string pluginVersion: "0.10.1"
   readonly property string pluginName: "Tailscale Host Monitor"
   readonly property string repoUrl: "https://github.com/nixfred/omarchy-server-status"
   readonly property string authorUrl: "https://nixfred.com"
@@ -25,6 +25,15 @@ Panel {
   property string processOutput: ""
   property string processError: ""
   property string lastError: ""
+  // The backend needs the bun runtime. PATH inside the shell process is the
+  // systemd user session's, not the interactive shell's, so a bare "bun"
+  // command can fail to start even when bun works in a terminal. Resolve the
+  // binary once before any backend spawn; on failure the panel reports a
+  // named, actionable error instead of a silent dead widget.
+  property bool runtimeResolved: false
+  property bool runtimeMissing: false
+  property string runtimePath: ""
+  property string runtimeProbeOutput: ""
   property string fetchHost: ""
   property var pendingHosts: []
   property var snapshotsByHost: ({})
@@ -146,6 +155,45 @@ Panel {
 
   Component.onCompleted: {
     activeHost = hostList.length > 0 ? hostList[0] : ""
+    resolveBackendRuntime()
+  }
+
+  function backendReady() {
+    return runtimeResolved && runtimePath !== ""
+  }
+
+  function resolveBackendRuntime() {
+    if (runtimeResolved || runtimeProbe.running) return
+    runtimeProbeOutput = ""
+    runtimeProbe.command = ["timeout", "-k", "2", "1", "/bin/sh", "-c",
+      "for candidate in bun \"$HOME/.bun/bin/bun\" /usr/bin/bun /usr/local/bin/bun; do" +
+      " case \"$candidate\" in" +
+      " /*) if [ -x \"$candidate\" ]; then printf '%s\\n' \"$candidate\"; exit 0; fi;;" +
+      " *) p=$(command -v -- \"$candidate\") && case \"$p\" in /*) printf '%s\\n' \"$p\"; exit 0;; esac;;" +
+      " esac; done; exit 1"]
+    runtimeProbe.running = true
+    runtimeProbeKillTimer.start()
+  }
+
+  function storeRuntimeProbe(raw) {
+    var candidate = String(raw || "").trim().split("\n")[0].trim()
+    runtimeResolved = true
+    if (candidate !== "" && candidate.indexOf("/") === 0) {
+      runtimePath = candidate
+      runtimeMissing = false
+      refresh()
+    } else {
+      runtimePath = ""
+      runtimeMissing = true
+      tailnetRefreshing = false
+      refreshing = false
+      lastError = runtimeMissingError()
+      // Nothing can be scanned without the runtime: close the startup
+      // bookkeeping so the header stops reading "Preparing startup scan".
+      tailnetInitialScanComplete = true
+      startupSweepStarted = true
+      startupSweepComplete = true
+    }
   }
 
   function normalizedHost(value) {
@@ -558,6 +606,13 @@ Panel {
     return "Container " + String(Math.max(0, index) + 1).padStart(2, "0")
   }
 
+  // A backend spawn can never work without the runtime; this is the single
+  // actionable message shown in the error row. Ordinary non-zero backend
+  // exits are quoted as before via stderr/exitCode.
+  function runtimeMissingError() {
+    return "Backend runtime not found: install bun (e.g. pacman -S bun), or symlink your bun binary into ~/.local/bin, then restart the shell."
+  }
+
   function displayError(value) {
     if (!privacyMode) return String(value || "")
     return String(value || "") !== "" ? "Host telemetry is currently unavailable." : ""
@@ -956,11 +1011,12 @@ Panel {
   }
 
   function refreshTailnet() {
+    if (!backendReady()) return
     if (tailnetProcess.running) return
     tailnetOutput = ""
     tailnetProcessError = ""
     tailnetRefreshing = true
-    tailnetProcess.command = ["bun", "run", backendPath, "tailnet", "--compact"]
+    tailnetProcess.command = [runtimePath, "run", backendPath, "tailnet", "--compact"]
     tailnetProcess.running = true
   }
 
@@ -996,6 +1052,7 @@ Panel {
   }
 
   function pump() {
+    if (!backendReady()) return
     if (statusProcess.running || startupPaceTimer.running) return
     if (pendingHosts.length === 0) { refreshing = false; return }
     var queue = pendingHosts.slice()
@@ -1004,7 +1061,7 @@ Panel {
     processOutput = ""
     processError = ""
     refreshing = true
-    statusProcess.command = ["bun", "run", backendPath, "status", "--host", fetchHost, "--compact"]
+    statusProcess.command = [runtimePath, "run", backendPath, "status", "--host", fetchHost, "--compact"]
     statusProcess.running = true
   }
 
@@ -1929,7 +1986,7 @@ Panel {
         if (exitCode !== 0 || root.processOutput === "") {
           root.setHostFetchFailed(completedHost, true)
           if (completedHost === root.activeHost)
-            root.lastError = root.processError || `server-status exited ${exitCode}`
+            root.lastError = root.processError || ("server-status exited " + exitCode + " with no output")
         }
         root.finishStartupHost(completedHost)
         root.fetchHost = ""
@@ -1939,6 +1996,34 @@ Panel {
           root.pump()
       })
     }
+  }
+
+  // Locates the bun runtime once, before any backend spawn. /bin/sh always
+  // exists, so the probe itself cannot fail to start. Output is capped at the
+  // parser, the child runs under `timeout -k`, and the result is trusted only
+  // on exit 0 with a single absolute path.
+  Process {
+    id: runtimeProbe
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        if (root.runtimeProbeOutput.length < 4096) root.runtimeProbeOutput += chunk
+      }
+    }
+    onExited: function(exitCode) {
+      runtimeProbeKillTimer.stop()
+      if (exitCode !== 0) {
+        root.storeRuntimeProbe("")
+        return
+      }
+      root.storeRuntimeProbe(root.runtimeProbeOutput)
+    }
+  }
+
+  Timer {
+    id: runtimeProbeKillTimer
+    interval: 2000
+    onTriggered: runtimeProbe.signal(9)
   }
 
   Process {
@@ -2003,7 +2088,7 @@ Panel {
       if (root.tailnetOutput !== "") root.storeTailnet(root.tailnetOutput)
       root.tailnetRefreshing = false
       if (exitCode !== 0)
-        root.tailnetError = root.tailnetProcessError || `tailscale discovery exited ${exitCode}`
+        root.tailnetError = root.tailnetProcessError || ("tailscale discovery exited " + exitCode + " with no output")
       if (!root.tailnetInitialScanComplete) {
         root.tailnetInitialScanComplete = true
         root.maybeStartStartupSweep()

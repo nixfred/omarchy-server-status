@@ -671,7 +671,8 @@ describe("Panel.qml rendering sinks", () => {
 
   test("collects backend output through a byte budget, not StdioCollector", () => {
     expect(panel).not.toContain("StdioCollector");
-    expect((panel.match(/splitMarker: ""/g) || []).length).toBe(4);
+    // status + tailnet, stdout + stderr each, plus the one-shot runtime probe.
+    expect((panel.match(/splitMarker: ""/g) || []).length).toBe(5);
     expect(panel).toContain("maxBackendOutputChars");
   });
 });

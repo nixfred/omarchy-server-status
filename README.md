@@ -138,7 +138,11 @@ sharing. Toggle it off and these are your real nodes.*
 
 - Omarchy Shell with third-party plugin support
 - [Bun](https://bun.sh) 1.2 or newer on the desktop (only long-stable
-  `Bun.spawn` / `bun test` APIs are used)
+  `Bun.spawn` / `bun test` APIs are used). The panel spawns `bun` from the
+  shell process's PATH; if your `bun` lives in `~/.bun/bin` (the official
+  installer), symlink or package it somewhere on that PATH — quickshell does
+  not inherit your interactive shell's PATH. When the runtime cannot be
+  started at all, the panel shows a named error instead of failing silently.
 - Passwordless SSH to each server (key-based; the backend runs with
   `BatchMode=yes`, so password prompts fail closed)
 - For container metrics, the remote account needs `sudo -n docker` or
@@ -284,6 +288,14 @@ Run the collector outside Omarchy to inspect the raw snapshot:
 ```bash
 bun run backend/server-status.ts status --host <ssh-alias>
 ```
+
+If the panel reports `Backend runtime not found: install bun (e.g.
+pacman -S bun), or symlink your bun binary into ~/.local/bin, then restart
+the shell.`, quickshell failed to spawn the backend runtime at all — that is
+an environment problem, not a host problem. `command -v bun` inside a
+terminal is not sufficient proof for the shell session: quickshell inherits
+the systemd user session PATH. Make bun reachable there (`pacman -S bun`, or
+a symlink into `~/.local/bin`), then `omarchy-restart-shell`.
 
 ## The observer effect: load spikes caused by monitoring itself
 
