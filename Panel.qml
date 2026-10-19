@@ -4,6 +4,7 @@ import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "ThemePalette.js" as ThemePalette
 
@@ -113,7 +114,7 @@ Panel {
   })
 
   readonly property var statusColors: ThemePalette.statusPalette(
-    themeColorValues, fallbackStatusColors, String(Color.background))
+    themeColorValues, fallbackStatusColors, String(Commons.Color.background))
   readonly property string snapshotCachePath: {
     var configured = String(Quickshell.env("XDG_CACHE_HOME") || "").trim()
     var directory = configured !== "" ? configured : Quickshell.env("HOME") + "/.cache"
@@ -137,8 +138,8 @@ Panel {
   readonly property var virtualMachines: containers.filter(function(item) {
     return String(item && item.runtime || "") === "kvm"
   })
-  readonly property color foreground: bar ? bar.foreground : Color.foreground
-  readonly property color urgent: bar ? bar.urgent : Color.urgent
+  readonly property color foreground: bar ? bar.foreground : Commons.Color.foreground
+  readonly property color urgent: bar ? bar.urgent : Commons.Color.urgent
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property string barState: {
@@ -660,7 +661,7 @@ Panel {
 
   function stateColor(state) {
     if (state === "pass") return statusColors.pass
-    if (state === "running") return Color.accent
+    if (state === "running") return Commons.Color.accent
     if (state === "warn") return statusColors.warn
     if (state === "fail") return statusColors.fail
     if (state === "muted") return root.dim
@@ -1358,10 +1359,10 @@ Panel {
                 color: active
                   ? Util.alpha(root.stateColor(root.hostIndicatorState(target)), 0.22)
                   : (root.dragTargetHost === target
-                    ? Util.alpha(Color.accent, 0.2)
+                    ? Util.alpha(Commons.Color.accent, 0.2)
                     : Util.alpha(root.foreground, 0.07))
                 border.width: active || root.dragTargetHost === target ? 1 : 0
-                border.color: root.dragTargetHost === target ? Color.accent : root.stateColor(root.hostIndicatorState(target))
+                border.color: root.dragTargetHost === target ? Commons.Color.accent : root.stateColor(root.hostIndicatorState(target))
                 opacity: root.draggedHost === target ? 0.18 : (modelData.online ? 1 : 0.7)
                 scale: root.dragTargetHost === target ? 1.05 : 1
 
@@ -1393,7 +1394,7 @@ Panel {
                     textFormat: Text.PlainText
                     anchors.verticalCenter: parent.verticalCenter
                     text: "󰆍"
-                    color: modelData.online ? Color.accent : root.dim
+                    color: modelData.online ? Commons.Color.accent : root.dim
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.bodySmall
                   }
@@ -1406,7 +1407,7 @@ Panel {
                   width: Style.space(3)
                   height: parent.height + Style.space(6)
                   radius: width / 2
-                  color: Color.accent
+                  color: Commons.Color.accent
                   z: 4
                 }
 
@@ -1478,16 +1479,16 @@ Panel {
               width: manageNodesLabel.implicitWidth + Style.space(18)
               height: Style.space(28)
               radius: height / 2
-              color: root.pickerOpen ? Util.alpha(Color.accent, 0.2) : Util.alpha(root.foreground, 0.07)
+              color: root.pickerOpen ? Util.alpha(Commons.Color.accent, 0.2) : Util.alpha(root.foreground, 0.07)
               border.width: root.pickerOpen ? 1 : 0
-              border.color: Color.accent
+              border.color: Commons.Color.accent
 
               Text {
                 textFormat: Text.PlainText
                 id: manageNodesLabel
                 anchors.centerIn: parent
                 text: root.pickerOpen ? "Done" : "+"
-                color: root.pickerOpen ? Color.accent : root.foreground
+                color: root.pickerOpen ? Commons.Color.accent : root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.body
                 font.bold: true
@@ -1531,9 +1532,9 @@ Panel {
                   width: (pickerFlow.width - Style.space(24)) / 7
                   height: Style.space(34)
                   radius: height / 2
-                  color: selected ? Util.alpha(Color.accent, 0.16) : Util.alpha(root.foreground, 0.05)
+                  color: selected ? Util.alpha(Commons.Color.accent, 0.16) : Util.alpha(root.foreground, 0.05)
                   border.width: selected ? 1 : 0
-                  border.color: Color.accent
+                  border.color: Commons.Color.accent
                   opacity: modelData.online ? 1 : 0.65
 
                   Row {
@@ -1569,7 +1570,7 @@ Panel {
                       textFormat: Text.PlainText
                       anchors.verticalCenter: parent.verticalCenter
                       text: selected ? "✓" : "+"
-                      color: selected ? Color.accent : root.foreground
+                      color: selected ? Commons.Color.accent : root.foreground
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.bodySmall
                       font.bold: true
@@ -1675,7 +1676,7 @@ Panel {
                 readonly property string address: root.primaryIp(root.activeDevice)
                 label: root.copiedValue === address ? "TAILSCALE IP · COPIED" : "TAILSCALE IP · CLICK TO COPY"
                 value: root.displayIp(root.primaryIp(root.activeDevice)) || "Unavailable"
-                valueColor: root.copiedValue === address ? Color.accent : root.foreground
+                valueColor: root.copiedValue === address ? Commons.Color.accent : root.foreground
                 clickable: address !== ""
                 onActivated: root.copyText(address)
               }
@@ -1919,9 +1920,9 @@ Panel {
           width: Math.max(root.dragGhostWidth, dragGhostContent.implicitWidth + Style.space(20))
           height: Math.max(root.dragGhostHeight, dragGhostContent.implicitHeight + Style.space(10))
           radius: height / 2
-          color: Util.alpha(Color.accent, 0.32)
+          color: Util.alpha(Commons.Color.accent, 0.32)
           border.width: 2
-          border.color: Color.accent
+          border.color: Commons.Color.accent
           rotation: -2
           scale: visible ? 1.06 : 0.96
           z: 200
@@ -2323,7 +2324,7 @@ Panel {
 
     text: label
     textFormat: Text.PlainText
-    color: linkHover.containsMouse ? Color.accent : root.dim
+    color: linkHover.containsMouse ? Commons.Color.accent : root.dim
     font.family: root.fontFamily
     font.pixelSize: Style.font.caption
     font.underline: linkHover.containsMouse
