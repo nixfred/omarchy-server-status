@@ -469,7 +469,21 @@ Panel {
     // card on purpose. Accept the legacy form for docker, which is what every
     // pre-existing mute was.
     var legacy = legacyWarningId(id)
-    return legacy !== "" && ids.indexOf(legacy) >= 0
+    if (legacy !== "" && ids.indexOf(legacy) >= 0) return true
+    return matchesMutePattern(ids, id)
+  }
+
+  // A recorded mute id ending in "*" is a prefix pattern: "container-kvm-test-drive-*"
+  // silences every VM whose name starts "test-drive-", including ones created later.
+  // Hand-written in the selection file (the card buttons only record exact ids). A bare
+  // "*" is ignored on purpose: it would mute every warning on the host, disk-full included.
+  function matchesMutePattern(ids, id) {
+    for (var index = 0; index < ids.length; index += 1) {
+      var entry = String(ids[index])
+      if (entry.length > 1 && entry.charAt(entry.length - 1) === "*"
+          && id.indexOf(entry.slice(0, entry.length - 1)) === 0) return true
+    }
+    return false
   }
 
   function legacyWarningId(warningId) {
@@ -519,6 +533,10 @@ Panel {
       if (index >= 0) nextIds.splice(index, 1)
       legacyIndex = legacy !== "" ? nextIds.indexOf(legacy) : -1
       if (legacyIndex >= 0) nextIds.splice(legacyIndex, 1)
+    } else if (isWarningMuted(host, id)) {
+      // Muted by a "*" pattern. Recording the exact id as well would leave the card
+      // muted with no way to unmute it here; the pattern is edited in the selection file.
+      return
     } else nextIds.push(id)
     if (nextIds.length > 0) nextMap[host] = nextIds
     else delete nextMap[host]

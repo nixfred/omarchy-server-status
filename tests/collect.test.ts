@@ -482,6 +482,53 @@ describe("Panel.qml delayed callbacks", () => {
     expect(toggle).toContain("legacyWarningId(id)");
   });
 
+  describe("prefix-pattern mutes", () => {
+    // Run the real functions out of Panel.qml, not a copy, against a mute map.
+    const fn = (name: string) =>
+      panel.match(new RegExp(`function ${name}\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n  \\}`))?.[0] || "";
+    const source = ["warningIds", "isWarningMuted", "legacyWarningId", "matchesMutePattern"].map(fn).join("\n");
+    const isMutedFor = (map: Record<string, string[]>) =>
+      new Function("mutedWarningsByHost", `${source}\nreturn isWarningMuted;`)(map) as (host: string, id: string) => boolean;
+
+    test("extracts every function it needs", () => {
+      for (const name of ["warningIds", "isWarningMuted", "legacyWarningId", "matchesMutePattern"]) {
+        expect(fn(name)).not.toBe("");
+      }
+    });
+
+    test("a trailing * mutes every id with that prefix, including ones created later", () => {
+      const muted = isMutedFor({ hostA: ["container-kvm-test-drive-*"] });
+      expect(muted("hostA", "container-kvm-test-drive-alpha")).toBe(true);
+      expect(muted("hostA", "container-kvm-test-drive-a-vm-that-did-not-exist-yesterday")).toBe(true);
+    });
+
+    test("a pattern does not reach beyond its prefix or its host", () => {
+      const muted = isMutedFor({ hostA: ["container-kvm-test-drive-*"] });
+      expect(muted("hostA", "container-kvm-omarchy-lab")).toBe(false);
+      expect(muted("hostA", "container-docker-qdrant")).toBe(false);
+      expect(muted("hostA", "disk-/")).toBe(false);
+      expect(muted("hostB", "container-kvm-test-drive-alpha")).toBe(false);
+    });
+
+    test("a bare * mutes nothing, so a typo cannot hide a full disk", () => {
+      const muted = isMutedFor({ hostA: ["*"] });
+      expect(muted("hostA", "disk-/")).toBe(false);
+      expect(muted("hostA", "container-kvm-test-drive-alpha")).toBe(false);
+    });
+
+    test("exact ids and the legacy docker form still work next to patterns", () => {
+      const muted = isMutedFor({ hostA: ["disk-/", "container-qdrant", "container-kvm-test-drive-*"] });
+      expect(muted("hostA", "disk-/")).toBe(true);
+      expect(muted("hostA", "container-docker-qdrant")).toBe(true);
+      expect(muted("hostA", "disk-/boot")).toBe(false);
+    });
+
+    test("the card button cannot add a redundant exact mute for a pattern-muted id", () => {
+      const toggle = panel.match(/function toggleWarningMute\([^)]*\)\s*\{[\s\S]*?\n  \}/)?.[0] || "";
+      expect(toggle).toMatch(/else if \(isWarningMuted\(host, id\)\) \{[\s\S]*?return[\s\S]*?\} else nextIds\.push\(id\)/);
+    });
+  });
+
   test("separates containers and virtual machines into dedicated sections", () => {
     expect(panel).toContain("readonly property var appContainers:");
     expect(panel).toContain("readonly property var virtualMachines:");
