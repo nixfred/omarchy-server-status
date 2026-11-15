@@ -125,10 +125,14 @@ Panel {
     return entry.trim()
   }).filter(function(entry) { return entry !== "" })
   readonly property var hostList: selectionReady ? selectedHosts : legacyHostList
+  // The bar icon judges EVERY saved target (summaryFor), so a saved target that matches no tailnet device must be drawn too.
+  // Dropping it made the icon red with no chip to explain why. After the first tailnet scan it becomes a visible "not on tailnet" chip.
   readonly property var monitoredDevices: hostList.map(function(host) {
-    return root.deviceForTarget(host)
+    var device = root.deviceForTarget(host)
+    return device !== null ? device : (root.tailnetInitialScanComplete ? root.missingDeviceFor(host) : null)
   }).filter(function(device) { return device !== null })
-  readonly property var activeDevice: deviceForTarget(activeHost)
+  readonly property var activeDevice: root.deviceForTarget(activeHost)
+    || ((root.tailnetInitialScanComplete && activeHost !== "" && hostList.indexOf(activeHost) >= 0) ? root.missingDeviceFor(activeHost) : null)
   readonly property var snapshot: snapshotsByHost[activeHost] || ({ host: null, containers: [], error: "" })
   readonly property var hostInfo: snapshot.host || null
   readonly property var containers: snapshot.containers instanceof Array ? snapshot.containers : []
@@ -228,6 +232,16 @@ Panel {
       if (deviceMatchesHost(tailnetDevices[index], host)) return tailnetDevices[index]
     }
     return null
+  }
+
+  function missingDeviceFor(host) {
+    var normalized = normalizedHost(host)
+    var shortName = normalized.split(".")[0]
+    return {
+      id: "missing|" + String(host), name: shortName, hostName: shortName, dnsName: normalized, os: "",
+      kind: "Not on tailnet", online: false, ips: [], tags: [], lastSeen: "", active: false, self: false,
+      sshHost: String(host), supportsMetrics: false, missing: true
+    }
   }
 
   function monitoredTarget(device) {
@@ -646,6 +660,7 @@ Panel {
 
   function lastSeenText(device) {
     if (!device) return ""
+    if (device.missing === true) return "Not on this tailnet"
     if (device.online) return "Online now"
     if (!device.lastSeen) return "Offline"
     return "Last seen " + new Date(device.lastSeen).toLocaleString()
@@ -835,6 +850,12 @@ Panel {
 
   function tailnetRows(device) {
     if (!device) return []
+    if (device.missing === true) return [{
+      id: "not-on-tailnet", label: "Not on this tailnet", state: "fail",
+      detail: "No tailnet device matches this target.", value: 0
+    }, {
+      id: "saved-target", label: "Saved target", state: "pass", detail: String(device.sshHost), value: 0
+    }]
     var rows = [{
       id: "tailscale-status",
       label: "Tailscale",
@@ -1049,8 +1070,10 @@ Panel {
       tailnetDevices = parsed.devices
       lastTailnetScanAtMs = Date.now()
       tailnetInitialScanComplete = true
-      if (!activeDevice || !isMonitored(activeDevice))
-        selectHost(monitoredDevices.length > 0 ? configuredTarget(monitoredDevices[0]) : "")
+      if (!activeDevice || !isMonitored(activeDevice)) {
+        var firstReal = monitoredDevices.filter(function(device) { return device.missing !== true })
+        selectHost(firstReal.length > 0 ? configuredTarget(firstReal[0]) : (monitoredDevices.length > 0 ? configuredTarget(monitoredDevices[0]) : ""))
+      }
       if (opened && activeDevice && activeDevice.online && activeDevice.supportsMetrics)
         refreshSelectedHost(false)
       maybeStartStartupSweep()
@@ -1409,6 +1432,16 @@ Panel {
                   }
 
                   Text {
+                    visible: modelData.missing === true
+                    textFormat: Text.PlainText
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "· not on tailnet"
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                  }
+
+                  Text {
                     textFormat: Text.PlainText
                     anchors.verticalCenter: parent.verticalCenter
                     text: "󰆍"
@@ -1679,7 +1712,7 @@ Panel {
               InfoField {
                 Layout.preferredWidth: Style.space(135)
                 label: "STATUS"
-                value: root.activeDevice && root.activeDevice.online ? "Online" : "Offline"
+                value: root.activeDevice && root.activeDevice.missing === true ? "Not on tailnet" : (root.activeDevice && root.activeDevice.online ? "Online" : "Offline")
                 valueColor: root.activeDevice && root.activeDevice.online ? root.stateColor("pass") : root.urgent
               }
 
@@ -1692,7 +1725,7 @@ Panel {
               InfoField {
                 Layout.fillWidth: true
                 readonly property string address: root.primaryIp(root.activeDevice)
-                label: root.copiedValue === address ? "TAILSCALE IP · COPIED" : "TAILSCALE IP · CLICK TO COPY"
+                label: address !== "" && root.copiedValue === address ? "TAILSCALE IP · COPIED" : "TAILSCALE IP · CLICK TO COPY"
                 value: root.displayIp(root.primaryIp(root.activeDevice)) || "Unavailable"
                 valueColor: root.copiedValue === address ? Commons.Color.accent : root.foreground
                 clickable: address !== ""
@@ -1703,6 +1736,16 @@ Panel {
                 Layout.fillWidth: true
                 label: "DEVICE"
                 value: root.activeDevice ? root.activeDevice.kind : "Unknown"
+              }
+
+              InfoField {
+                visible: root.activeDevice && root.activeDevice.missing === true
+                Layout.preferredWidth: Style.space(150)
+                label: "SAVED TARGET · CLICK TO REMOVE"
+                value: "Remove"
+                valueColor: root.urgent
+                clickable: true
+                onActivated: root.toggleMonitored(root.activeDevice)
               }
 
               InfoField {

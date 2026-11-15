@@ -46,6 +46,10 @@ inventory to keep in sync, no exporter to deploy.
 - Tailscale is the addressing layer, so it works the same whether the box is in
   your closet or in another hemisphere.
 
+## Saved targets that are no longer on the tailnet
+
+A saved target that matches no tailnet device (the node was removed, renamed or is on another tailnet) used to turn the bar icon red with no chip to explain it. It now appears as its own red **"not on tailnet"** chip. Select it and press **Remove** to drop the saved target.
+
 ## How it works
 
 <img src="assets/flow.svg" alt="The Omarchy panel asks the Bun backend, which makes one read-only SSH round trip per host and returns a sanitized JSON snapshot. Nothing is installed on the server." width="100%">
